@@ -22,5 +22,16 @@ export function getDefaultNovaIDs(): NovaIDs {
         TargetCorners: [],
         Weapon: [],
         SoundFile: [],
+        Mission: [],
+        Cron: [],
+        Government: [],
+        Dude: [],
+        Pers: [],
+        Fleet: [],
+        Rank: [],
+        Junk: [],
+        StringSet: [],
+        Char: [],
+        Desc: [],
     }
 }

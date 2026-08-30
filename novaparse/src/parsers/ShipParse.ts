@@ -85,6 +85,22 @@ export async function ShipParse(ship: ShipResource,
 
 
 
+    // Resolve the escort-upgrade chain target to a global shïp id. A
+    // missing target resource degrades to null (the ship just can't be
+    // upgraded) with a warning, like the explosions above.
+    var upgradeTo: string | null = null;
+    if (ship.upgradeTo !== null) {
+        let upgraded = ship.idSpace.shïp[ship.upgradeTo];
+        if (upgraded) {
+            upgradeTo = upgraded.globalID;
+        }
+        else {
+            notFoundFunction("shïp id " + base.id + " missing upgrade target shïp of id " + ship.upgradeTo);
+        }
+    }
+
+
+
     var pictID: string;
     var pict = ship.idSpace.PICT[ship.pictID]
     if (pict) {
@@ -180,12 +196,20 @@ export async function ShipParse(ship: ShipResource,
         physics,
         pict: pictID,
         desc: desc,
+        price: ship.cost,
         outfits,
         initialExplosion: initialExplosionID,
         finalExplosion: finalExplosionID,
         deathDelay: ship.deathDelay / FPS,
         largeExplosion: ship.deathDelay >= 60,
         displayWeight: ship.id, // TODO: Fix this once displayweight is implemented
+        inherentAI: ship.inherentAI,
+        crew: ship.crew,
+        onCapture: ship.onCapture,
+        upgradeTo,
+        escortUpgradeCost: ship.escortUpgradeCost,
+        escortSellValue: ship.escortSellValue,
+        escortType: ship.escortType,
         animation,
         vulnerableTo: ["normal"], // TODO: Parse if it's vulnerable to point defense
         ...base

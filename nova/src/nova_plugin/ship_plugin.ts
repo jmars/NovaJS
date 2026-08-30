@@ -4,12 +4,15 @@ import { Component } from 'nova_ecs/component';
 import { Angle } from 'nova_ecs/datatypes/angle';
 import { Position } from 'nova_ecs/datatypes/position';
 import { Vector } from 'nova_ecs/datatypes/vector';
+import { Entity } from 'nova_ecs/entity';
 import { Optional } from 'nova_ecs/optional';
 import { Plugin } from 'nova_ecs/plugin';
 import { DeltaResource } from 'nova_ecs/plugins/delta_plugin';
 import { MovementPhysics, MovementPhysicsComponent, MovementStateComponent, MovementType } from 'nova_ecs/plugins/movement_plugin';
 import { Provide } from 'nova_ecs/provide';
 import { ProvideAsync } from "nova_ecs/provide_async";
+import { cargoUsedTons } from '../player/cargo';
+import { PlayerState } from '../player/player_state';
 import { AnimationComponent } from './animation_plugin';
 import { CollisionVulnerabilityComponent } from './collision_interaction';
 import { GameDataResource } from './game_data_resource';
@@ -74,6 +77,29 @@ export function getShipMovementPhysics(physics: ShipPhysics): MovementPhysics {
             ? MovementType.INERTIALESS : MovementType.INERTIAL,
         turnRate: physics.turnRate,
     };
+}
+
+// The ship's total cargo capacity: ShipPhysicsComponent.freeCargo — the
+// provider's base space plus outfit bonus (never recompute it here; outfits
+// already added their share). Falls back to the ShipData's base capacity
+// when the physics provider has not resolved on this entity yet, and null
+// when nothing is known.
+export function shipCargoCapacity(entity: Entity): number | null {
+    const physics = entity.components.get(ShipPhysicsComponent);
+    if (physics) {
+        return physics.freeCargo;
+    }
+    const shipData = entity.components.get(ShipDataComponent);
+    return shipData ? shipData.physics.freeCargo : null;
+}
+
+// The player's free cargo tons on this ship: the capacity minus what the
+// pilot's hold (PlayerState.cargo) already carries. Null means unknown
+// capacity: availability rule flags2 0x0001 passes and cargo pickups load
+// unconditionally.
+export function shipFreeCargoTons(entity: Entity, state: PlayerState): number | null {
+    const capacity = shipCargoCapacity(entity);
+    return capacity === null ? null : capacity - cargoUsedTons(state.cargo);
 }
 
 export const ShipMovementPhysicsProvider = Provide({

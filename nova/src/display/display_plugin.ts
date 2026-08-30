@@ -6,6 +6,7 @@ import * as PIXI from "pixi.js";
 import { PlayerShipSelector } from "../nova_plugin/player_ship_plugin";
 import { AnimationGraphicPlugin } from "./animation_graphic_plugin";
 import { BeamDisplayPlugin } from "./beam_display_plugin";
+import { CommPlugin } from "./comm_plugin";
 import { ExplosionPlugin } from "./explosion_plugin";
 import { FullscreenPlugin } from "./fullscreen_plugin";
 import { ParticlesPlugin } from "./particles_plugin";
@@ -19,6 +20,7 @@ import { Stage } from "./stage_resource";
 import { starfield } from "./starfield_plugin";
 import { StarmapPlugin } from "./starmap_plugin";
 import { StatusBarResource, StatusBarPlugin } from "./status_bar";
+import { MessageLogPlugin } from "./message_log";
 import { TargetCornersPlugin } from "./target_corners_plugin";
 
 
@@ -49,6 +51,7 @@ export const Display: Plugin = {
         await world.addPlugin(ScreenSizePlugin);
         await world.addPlugin(starfieldPlugin);
         await world.addPlugin(StatusBarPlugin);
+        await world.addPlugin(MessageLogPlugin);
         await world.addPlugin(AnimationGraphicPlugin);
         world.addSystem(CenterShipSystem);
         await world.addPlugin(TargetCornersPlugin);
@@ -57,6 +60,7 @@ export const Display: Plugin = {
         await world.addPlugin(ExplosionPlugin);
         await world.addPlugin(BeamDisplayPlugin);
         await world.addPlugin(PlanetCornersPlugin);
+        await world.addPlugin(CommPlugin);
         await world.addPlugin(SpaceportPlugin);
         await world.addPlugin(StarmapPlugin);
         await world.addPlugin(SoundPlugin);
@@ -68,6 +72,7 @@ export const Display: Plugin = {
         await world.removePlugin(StarmapPlugin);
         await world.removePlugin(SpaceportPlugin);
         await world.removePlugin(PlanetCornersPlugin);
+        await world.removePlugin(CommPlugin);
         await world.removePlugin(BeamDisplayPlugin);
         await world.removePlugin(ExplosionPlugin);
         await world.removePlugin(FullscreenPlugin);
@@ -77,6 +82,7 @@ export const Display: Plugin = {
         world.removeSystem(CenterShipSystem);
 
         await world.removePlugin(AnimationGraphicPlugin);
+        await world.removePlugin(MessageLogPlugin);
         await world.removePlugin(StatusBarPlugin);
         await world.removePlugin(starfieldPlugin);
         await world.removePlugin(ScreenSizePlugin);

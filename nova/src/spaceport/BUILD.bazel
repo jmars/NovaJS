@@ -1,13 +1,33 @@
 load("//:defaults.bzl", "ts_library")
 load("//:esbuild.bzl", "esbuild")
+load("@npm//@bazel/jasmine:index.bzl", "jasmine_node_test")
 
 package(default_visibility = ["//visibility:public"])
 
 ts_library(
     name = "spaceport",
-    srcs = glob(["*.ts"]),
+    srcs = [
+        "bar.ts",
+        "briefing.ts",
+        "button.ts",
+        "fleet_dialog.ts",
+        "item_grid.ts",
+        "menu.ts",
+        "menu_controls.ts",
+        "mission_bbs.ts",
+        "mission_info.ts",
+        "mission_text.ts",
+        "outfitter.ts",
+        "shipyard.ts",
+        "spaceport.ts",
+        "starmap.ts",
+        "trade_center.ts",
+    ],
     deps = [
         "//nova/src/client/gamedata",
+        "//nova/src/missions",
+        "//nova/src/missions:mission_glue",
+        "//nova/src/player",
         "//novadatainterface",
         "//nova/src/nova_plugin",
         "//nova_ecs:ecs",
@@ -16,4 +36,22 @@ ts_library(
         "//nova_ecs/plugins",
         "//nova_ecs/datatypes",
     ]
+)
+
+ts_library(
+    name = "unit_test_sources",
+    testonly = True,
+    # All tests must end in "_test.ts" or jasmine won't recognize them!
+    srcs = [
+        "mission_text_test.ts",
+    ],
+    deps = [
+        ":spaceport",
+        "@npm//@types/jasmine",
+    ],
+)
+
+jasmine_node_test(
+    name = "spaceport_tests",
+    srcs = [":unit_test_sources"],
 )

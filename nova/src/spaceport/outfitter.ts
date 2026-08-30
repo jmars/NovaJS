@@ -8,9 +8,24 @@ import { OutfitsState } from "../nova_plugin/outfit_plugin";
 import { Button } from "./button";
 import { ItemGrid, ItemTile } from "./item_grid";
 import { Menu } from "./menu";
+import * as purchase from "./purchase";
 
 
 const descWidth = 190;
+
+/**
+ * The money context the spaceport sets before each show(): the player
+ * wallet (read + write-through persist), the planet's price modifier and
+ * the free mass the ship has left. Undefined in worlds without the mission
+ * system, where buying stays free (legacy behavior).
+ */
+export interface OutfitterPurchases {
+    credits(): number;
+    setCredits(credits: number): void;
+    priceMod: number;
+    freeMass: number;
+}
+
 export const FONT = {
     normal: {
         fontFamily: "Geneva", fontSize: 10, fill: 0xffffff,
@@ -30,6 +45,10 @@ export class Outfitter extends Menu<OutfitsState> {
     private itemGrid?: ItemGrid<OutfitData>;
     private pictContainer = new PIXI.Container();
     private outfits: DefaultMap<string, number>;
+    private purchases?: OutfitterPurchases;
+    private freeMass = 0;
+    private buyButton?: Button;
+    private sellButton?: Button;
 
     private text = {
         description: new PIXI.Text("", FONT.normal),
@@ -41,6 +60,8 @@ export class Outfitter extends Menu<OutfitsState> {
         mass: new PIXI.Text("3", FONT.normal),
         availableMass: new PIXI.Text("Available:", FONT.normal),
         freeMass: new PIXI.Text("", FONT.normal),
+        creditsLabel: new PIXI.Text("Credits:", FONT.normal),
+        credits: new PIXI.Text("", FONT.normal),
     }
 
     constructor(gameData: GameData,
@@ -58,6 +79,8 @@ export class Outfitter extends Menu<OutfitsState> {
         buttons.sell.click.subscribe(this.sellOutfit.bind(this));
         buttons.done.click.subscribe(this.done.bind(this));
         this.addButtons(buttons);
+        this.buyButton = buttons.buy;
+        this.sellButton = buttons.sell;
 
         this.pictContainer.position.x = 174;
         this.pictContainer.position.y = -152.5;
@@ -92,9 +115,21 @@ export class Outfitter extends Menu<OutfitsState> {
         this.text.freeMass.position.x = 300;
         this.text.freeMass.position.y = 106;
 
+        this.text.creditsLabel.position.x = 234;
+        this.text.creditsLabel.position.y = 118;
+
+        this.text.credits.position.x = 300;
+        this.text.credits.position.y = 118;
+
         for (const t of Object.values(this.text)) {
             this.container.addChild(t);
         }
+    }
+
+    /** Called by the spaceport before each show() with the live wallet,
+     * price modifier and free mass. */
+    setPurchases(purchases: OutfitterPurchases) {
+        this.purchases = purchases;
     }
 
     protected override async build() {
@@ -129,36 +164,65 @@ export class Outfitter extends Menu<OutfitsState> {
     }
 
     private buyOutfit() {
-        //const mass = this.itemGrid?.selection.physics.freeMass;
-        //if (mass <= global.myShip.properties.physics.freeMass) {
-        const id = this.itemGrid?.selection.id;
-        if (!id) {
+        const outfit = this.itemGrid?.selection;
+        if (!outfit) {
             return;
         }
-        this.outfits.set(id, this.outfits.get(id) + 1);
 
-        //     global.myShip.addOutfit(outfit, false);
-        // global.myShip.properties.physics.freeMass -= mass;
-        // this.setFreeMassText();
+        if (this.purchases) {
+            const wallet = { credits: this.purchases.credits() };
+            const result = purchase.buyOutfit(wallet, asOutfits(this.outfits),
+                outfit, this.freeMass, this.purchases.priceMod);
+            if (!result) {
+                // Not enough credits or mass: no-op, the Buy button is grey.
+                return;
+            }
+            this.purchases.setCredits(result.credits);
+            this.freeMass = result.freeMass;
+            this.outfits = countsMap(result.outfits);
+        }
+        else {
+            // No mission system: buying is free (legacy behavior).
+            this.outfits.set(outfit.id, this.outfits.get(outfit.id) + 1);
+        }
+
         this.itemGrid?.setCounts(this.outfits);
-        //}
+        this.setCountText(outfit);
+        this.setFreeMassText();
+        this.setCreditsText();
+        this.updateButtons();
     }
 
     private sellOutfit() {
-        const id = this.itemGrid?.selection.id;
-        if (!id) {
+        const outfit = this.itemGrid?.selection;
+        if (!outfit) {
             return;
         }
-        this.outfits.set(id, Math.max(0, this.outfits.get(id) - 1));
-        if (this.outfits.get(id) === 0) {
-            this.outfits.delete(id);
+
+        if (this.purchases) {
+            const wallet = { credits: this.purchases.credits() };
+            const result = purchase.sellOutfit(wallet, asOutfits(this.outfits),
+                outfit, this.freeMass);
+            if (!result) {
+                // Nothing to sell: no-op, the Sell button is grey.
+                return;
+            }
+            this.purchases.setCredits(result.credits);
+            this.freeMass = result.freeMass;
+            this.outfits = countsMap(result.outfits);
         }
-        // var outfit = { id: this.itemGrid.selection.id, count: 1 };
-        // if (global.myShip.removeOutfit(outfit, false)) {
-        //     global.myShip.properties.physics.freeMass += this.itemGrid.selection.physics.freeMass;
-        // }
-        // this.setFreeMassText();
+        else {
+            this.outfits.set(outfit.id, Math.max(0, this.outfits.get(outfit.id) - 1));
+            if (this.outfits.get(outfit.id) === 0) {
+                this.outfits.delete(outfit.id);
+            }
+        }
+
         this.itemGrid?.setCounts(this.outfits);
+        this.setCountText(outfit);
+        this.setFreeMassText();
+        this.setCreditsText();
+        this.updateButtons();
     }
 
     private setOutfitSelected(outfitTile: ItemTile<OutfitData> | undefined) {
@@ -166,10 +230,13 @@ export class Outfitter extends Menu<OutfitsState> {
         this.pictContainer.children.length = 0;
         this.text.description.text = "";
         this.text.price.text = "";
+        this.text.count.text = "";
         this.text.mass.visible = false;
         this.text.itemMass.visible = false;
         this.text.availableMass.visible = false;
         this.text.freeMass.visible = false;
+        this.text.creditsLabel.visible = false;
+        this.text.credits.visible = false;
 
         if (!outfitTile) {
             return;
@@ -182,8 +249,20 @@ export class Outfitter extends Menu<OutfitsState> {
         // Set Description
         this.text.description.text = outfitTile.item.desc;
 
-        // Set price text
-        this.text.price.text = formatPrice(outfitTile.item.price);
+        // Set price text: what buying one costs here (price-modified when
+        // the purchases context is live).
+        const price = this.purchases
+            ? purchase.outfitPrice(outfitTile.item, this.purchases.priceMod)
+            : outfitTile.item.price;
+        this.text.price.text = formatPrice(price);
+
+        // Set owned-count text
+        this.setCountText(outfitTile.item);
+
+        // Credits are always visible once an item is selected.
+        this.setCreditsText();
+        this.text.creditsLabel.visible = true;
+        this.text.credits.visible = true;
 
         if (outfitTile.item.physics.freeMass > 0) {
             // Set mass text
@@ -194,15 +273,46 @@ export class Outfitter extends Menu<OutfitsState> {
             this.text.availableMass.visible = true;
             this.text.freeMass.visible = true;
         }
+
+        this.updateButtons();
     }
 
     private setFreeMassText() {
-        //this.text.freeMass.text = formatMass(global.myShip.properties.physics.freeMass);
+        this.text.freeMass.text = formatMass(this.freeMass);
+    }
+
+    private setCountText(outfit: OutfitData) {
+        this.text.count.text = String(this.outfits.get(outfit.id) ?? 0);
+    }
+
+    private setCreditsText() {
+        // The ∞ placeholder keeps the legacy free-buying mode readable.
+        this.text.credits.text = this.purchases
+            ? formatPrice(this.purchases.credits())
+            : "∞ cr";
+    }
+
+    // Greys the Buy/Sell buttons while the selected outfit is unaffordable
+    // or there is nothing to sell; the click handlers no-op regardless.
+    private updateButtons() {
+        const outfit = this.itemGrid?.selection;
+        if (!outfit || !this.purchases) {
+            return;
+        }
+        const wallet = { credits: this.purchases.credits() };
+        this.buyButton!.state = purchase.canBuyOutfit(wallet, outfit,
+            this.freeMass, this.purchases.priceMod) ? 'normal' : 'grey';
+        this.sellButton!.state =
+            (this.outfits.get(outfit.id) ?? 0) > 0 ? 'normal' : 'grey';
     }
 
     protected override setInput(input: OutfitsState) {
         this.outfits = new DefaultMap(() => 0, [...input].map(
             ([k, v]) => [k, v.count]));
+        if (this.purchases) {
+            this.freeMass = this.purchases.freeMass;
+            this.setCreditsText();
+        }
         super.setInput(input);
         this.itemGrid?.setCounts(this.outfits);
     }
@@ -214,11 +324,23 @@ export class Outfitter extends Menu<OutfitsState> {
     }
 }
 
+/** OutfitsState (id -> {count}) view of a counts map, for the pure module. */
+function asOutfits(counts: Map<string, number>): purchase.Outfits {
+    return new Map([...counts].map(([id, count]) => [id, { count }]));
+}
+
+/** Counts map (id -> count) out of a pure-module result, DefaultMap so the
+ * outfitter's `+1` writes keep working. */
+function countsMap(outfits: purchase.Outfits): DefaultMap<string, number> {
+    return new DefaultMap(() => 0, [...outfits].map(([id, { count }]) =>
+        [id, count] as [string, number]));
+}
+
 function addCommas(p: number) {
     return p.toLocaleString();
 }
 
-function formatPrice(p: number) {
+export function formatPrice(p: number) {
     var mil = 1000000;
     if (p >= mil) {
         var modmil = String(p % mil).substring(0, 3);
@@ -230,6 +352,6 @@ function formatPrice(p: number) {
     }
 };
 
-function formatMass(m: number) {
+export function formatMass(m: number) {
     return m.toLocaleString() + " tons";
 };

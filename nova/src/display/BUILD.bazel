@@ -35,6 +35,7 @@ ts_library(
         "//novadatainterface",
         "//nova/src/nova_plugin",
         "//nova/src/client/gamedata",
+        "//nova/src/missions:mission_glue",
         "//nova/src/util",
         "//nova/src/spaceport",
         "@npm//@pixi/sound",

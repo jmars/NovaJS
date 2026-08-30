@@ -1,7 +1,17 @@
 import { BaseResource } from "./NovaResourceBase";
 import { BoomResource } from "./BoomResource";
+import { CharResource } from "./CharResource";
+import { CronResource } from "./CronResource";
 import { DescResource } from "./DescResource";
+import { DudeResource } from "./DudeResource";
+import { FleetResource } from "./FleetResource";
+import { GovtResource } from "./GovtResource";
+import { JunkResource } from "./JunkResource";
+import { MisnResource } from "./MisnResource";
+import { RankResource } from "./RankResource";
+import { StrResource } from "./StrResource";
 import { OutfResource } from "./OutfResource";
+import { PersResource } from "./PersResource";
 import { RledResource } from "./RledResource";
 import { PictResource } from "./PictResource";
 import { ShanResource } from "./ShanResource";
@@ -65,25 +75,25 @@ type ResList<T> = {
 type NovaResources = {
     [index: string]: ResList<BaseResource>;
     bööm: ResList<BoomResource>;
-    chär: ResList<BaseResource>;
+    chär: ResList<CharResource>;
     cicn: ResList<BaseResource>;
     cölr: ResList<BaseResource>;
-    crön: ResList<BaseResource>;
+    crön: ResList<CronResource>;
     dësc: ResList<DescResource>;
     DITL: ResList<BaseResource>;
     DLOG: ResList<BaseResource>;
-    düde: ResList<BaseResource>;
-    flët: ResList<BaseResource>;
-    gövt: ResList<BaseResource>;
+    düde: ResList<DudeResource>;
+    flët: ResList<FleetResource>;
+    gövt: ResList<GovtResource>;
     ïntf: ResList<BaseResource>;
-    jünk: ResList<BaseResource>;
-    mïsn: ResList<BaseResource>;
+    jünk: ResList<JunkResource>;
+    mïsn: ResList<MisnResource>;
     nëbu: ResList<BaseResource>;
     öops: ResList<BaseResource>;
     oütf: ResList<OutfResource>;
-    përs: ResList<BaseResource>;
+    përs: ResList<PersResource>;
     PICT: ResList<PictResource>;
-    ränk: ResList<BaseResource>;
+    ränk: ResList<RankResource>;
     rlë8: ResList<BaseResource>;
     rlëD: ResList<RledResource>;
     röid: ResList<BaseResource>;
@@ -93,7 +103,7 @@ type NovaResources = {
     spïn: ResList<SpinResource>;
     spöb: ResList<SpobResource>;
     "STR ": ResList<BaseResource>;
-    STRH: ResList<BaseResource>;
+    "STR#": ResList<StrResource>;
     sÿst: ResList<SystResource>;
     vers: ResList<BaseResource>;
     wëap: ResList<WeapResource>;
@@ -129,7 +139,7 @@ function getEmptyNovaResources(): NovaResources {
         spïn: {},
         spöb: {},
         "STR ": {},
-        STRH: {},
+        "STR#": {},
         sÿst: {},
         vers: {},
         wëap: {}

@@ -13,7 +13,11 @@ export interface OutfitData extends BaseData {
     price: number,
     desc: string,
     displayWeight: number,
-    max: number
+    max: number,
+    contribute: [number, number], // 64-bit Contribute while owned
+    // oütf ModType 25 "marines": ModVal >= 1 adds that many crew to the
+    // ship it's on; -1..-100 adds |ModVal| percent to capture odds.
+    marines: { crew: number, oddsPercent: number }
 }
 
 export function getDefaultOutfitData(): OutfitData {
@@ -27,6 +31,8 @@ export function getDefaultOutfitData(): OutfitData {
         price: 0,
         desc: "default outfit",
         displayWeight: 0,
-        max: 0
+        max: 0,
+        contribute: [0, 0],
+        marines: { crew: 0, oddsPercent: 0 }
     }
 }

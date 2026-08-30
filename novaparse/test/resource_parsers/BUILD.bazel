@@ -29,6 +29,8 @@ ts_library(
         "BoomResource_test.ts",
         "DescResource_test.ts",
         "OutfResource_test.ts",
+        "PersResource_test.ts",
+        "JunkResource_test.ts",
         "PictResource_test.ts",
         "RledResource_test.ts",
         "ShanResource_test.ts",

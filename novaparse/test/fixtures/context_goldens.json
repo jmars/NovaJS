@@ -1,0 +1,325 @@
+{
+ "_comment": "Golden values cross-checked byte-by-byte against the real .rez resources (ConText export conventions). Counts are for the whole 'Nova Files' directory: the 2848 ConText dësc live in Nova Data 1-6, plus 184 ship/pilot class dësc in Nova Ships 7 = 3032. StringSet: 226 in Nova Data 5 plus the button-defaults STR# 150 from Nova Graphics 3 = 227.",
+ "counts": {
+  "Mission": 791,
+  "Dude": 147,
+  "Government": 68,
+  "Fleet": 128,
+  "Rank": 31,
+  "StringSet": 227,
+  "Char": 1,
+  "Desc": 3032,
+  "Pers": 516,
+  "Junk": 23
+ },
+ "missions": {
+  "nova:128": {
+   "name": "Delivery to Earth; Vellos1",
+   "payVal": 15000,
+   "returnStel": 128,
+   "availRandom": 8,
+   "cargoType": 1000,
+   "cargoQty": -5,
+   "availBits": "!(b511 | b515) & !b350",
+   "onSuccess": "b350 b6666",
+   "compText": "nova:9350",
+   "canAbort": true,
+   "flags": 256,
+   "flags2": 1
+  },
+  "nova:129": {
+   "name": "Visit Vell-os Homeworld; Vellos2",
+   "refuseText": "nova:20351",
+   "flags": 4096,
+   "flags2": 0
+  },
+  "nova:156": {
+   "onShipDone": "Q25059"
+  },
+  "nova:700": {
+   "name": "Rebel Equipment Drop;Pirate 005B",
+   "availBits": "b650 & !b651",
+   "auxShipCount": 5,
+   "auxShipDude": "nova:130",
+   "flags": 4176,
+   "flags2": 1
+  }
+ },
+ "governments": {
+  "nova:128": {
+   "name": "Federation",
+   "commName": "Federation",
+   "targetCode": " Fed.",
+   "mediumName": "Federation",
+   "color": 2895023,
+   "intf": 130,
+   "newsPic": 9001,
+   "inhJam": [
+    7,
+    5,
+    0,
+    0
+   ]
+  }
+ },
+ "dudes": {
+  "nova:128": {
+   "name": "Lone Federation Ship",
+   "aiType": 4,
+   "govt": "nova:128",
+   "firstShip": "nova:142",
+   "shipProbabilitySum": 100
+  }
+ },
+ "perses": {
+  "nova:128": {
+   "aiType": 2,
+   "coward": 25,
+   "govt": "nova:157",
+   "shipType": "nova:136",
+   "credits": 8000,
+   "shieldMod": 100,
+   "commQuote": -1,
+   "hailQuote": 9,
+   "linkMission": "nova:132"
+  },
+  "nova:131": {
+   "name": "Jack Folstam",
+   "linkSyst": 132,
+   "aiType": 3,
+   "aggress": 2,
+   "coward": 25,
+   "govt": "nova:149",
+   "shipType": "nova:279",
+   "weapTypes": [
+    "nova:133",
+    "nova:131",
+    "nova:129",
+    "nova:135"
+   ],
+   "weapCounts": [
+    1,
+    1,
+    1,
+    2
+   ],
+   "ammoLoads": [
+    0,
+    0,
+    0,
+    50
+   ],
+   "credits": 250000,
+   "shieldMod": 200,
+   "commQuote": 1,
+   "hailQuote": 1,
+   "linkMission": "nova:140",
+   "flags": 2059,
+   "activeOn": "b0 & !b8"
+  }
+ },
+ "fleets": {
+  "nova:149": {
+   "name": "Rebels",
+   "govt": "nova:141",
+   "linkSyst": 10000,
+   "activateOn": "!(b332 | b148)",
+   "leadShip": "nova:181"
+  }
+ },
+ "ranks": {
+  "nova:131": {
+   "name": "T5; Vell-os 1",
+   "govt": "nova:136",
+   "convName": "T5",
+   "shortName": "T5",
+   "contributes": [
+    0,
+    0
+   ]
+  }
+ },
+ "chars": {
+  "nova:128": {
+   "name": ".Trader",
+   "startCash": 25000,
+   "startShipType": "nova:128",
+   "startSystems": [
+    "nova:128",
+    "nova:136",
+    "nova:170",
+    "nova:184"
+   ],
+   "introPicts": [
+    8200,
+    8201,
+    8202,
+    -1
+   ],
+   "flags": 1,
+   "startDate": {
+    "day": 23,
+    "month": 6,
+    "year": 1177
+   },
+   "dateSuffix": " NC"
+  }
+ },
+ "stringSets": {
+  "nova:128": {
+   "name": "Default Names",
+   "count": 9,
+   "firstString": "Shane Merrol"
+  }
+ },
+ "descs": {
+  "nova:20351": {
+   "name": "Visit Vell-os Homeworld",
+   "textPrefix": "As soon as you shake your head,"
+  },
+  "nova:9350": {
+   "name": "Delivery to Earth",
+   "textPrefix": "As a group of dockworkers unloads the shipment"
+  }
+ },
+ "junkIDs": [
+  "128",
+  "129",
+  "130",
+  "131",
+  "132",
+  "133",
+  "134",
+  "135",
+  "136",
+  "137",
+  "138",
+  "139",
+  "140",
+  "141",
+  "142",
+  "143",
+  "144",
+  "145",
+  "146",
+  "147",
+  "148",
+  "149",
+  "150"
+ ],
+ "planets": {
+  "nova:128": {
+   "hasTradeCenter": true,
+   "priceBands": [
+    2,
+    2,
+    1,
+    3,
+    2,
+    0
+   ]
+  },
+  "nova:129": {
+   "hasTradeCenter": false,
+   "priceBands": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "nova:263": {
+   "hasTradeCenter": true,
+   "priceBands": [
+    0,
+    2,
+    0,
+    0,
+    2,
+    3
+   ]
+  }
+ },
+ "tradeSpobCount": 162,
+ "junks": {
+  "nova:128": {
+   "lcName": "ice-lizard pelts",
+   "abbrev": "Pelts",
+   "basePrice": 750,
+   "flags": 0,
+   "scanMask": 2048,
+   "soldAt": [
+    "nova:219",
+    "nova:449"
+   ],
+   "boughtAt": [
+    "nova:164",
+    "nova:175",
+    "nova:207",
+    "nova:242",
+    "nova:267",
+    "nova:345"
+   ],
+   "buyOn": "",
+   "sellOn": "h33r"
+  },
+  "nova:137": {
+   "lcName": "bio-weapons",
+   "abbrev": "Bio-weaps",
+   "basePrice": 2500,
+   "scanMask": -2665,
+   "soldAt": [
+    "nova:215"
+   ],
+   "boughtAt": [
+    "nova:149",
+    "nova:380",
+    "nova:510"
+   ]
+  },
+  "nova:149": {
+   "lcName": "durknen girns",
+   "abbrev": "dk grns",
+   "basePrice": 3000,
+   "flags": 0,
+   "scanMask": 0,
+   "soldAt": [],
+   "boughtAt": [
+    "nova:311",
+    "nova:314",
+    "nova:327",
+    "nova:355",
+    "nova:382",
+    "nova:403",
+    "nova:341",
+    "nova:322"
+   ],
+   "buyOn": "b43",
+   "sellOn": ""
+  }
+ },
+ "ships": {
+  "nova:128": {
+   "upgradeTo": "nova:188",
+   "escortUpgradeCost": 5000,
+   "escortSellValue": 0,
+   "escortType": 3
+  },
+  "nova:135": {
+   "escortType": 0
+  },
+  "nova:131": {
+   "escortType": 3,
+   "upgradeTo": "nova:190",
+   "escortUpgradeCost": 1000000
+  },
+  "nova:146": {
+   "escortType": 2,
+   "upgradeTo": "nova:228",
+   "escortUpgradeCost": 1500000,
+   "escortSellValue": 0
+  }
+ }
+}

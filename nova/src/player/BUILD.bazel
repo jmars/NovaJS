@@ -1,0 +1,62 @@
+package(default_visibility = ["//visibility:public"])
+
+load("//:defaults.bzl", "ts_library")
+load("@npm//@bazel/jasmine:index.bzl", "jasmine_node_test")
+
+ts_library(
+    name = "player",
+    srcs = [
+        "cargo.ts",
+        "cargo_decay.ts",
+        "date.ts",
+        "escort_ops.ts",
+        "legal_status.ts",
+        "pilot_files.ts",
+        "pilot_uuid.ts",
+        "player_state.ts",
+        "player_state_component.ts",
+        "player_state_plugin.ts",
+        "ranks.ts",
+        "smuggling.ts",
+        "trade.ts",
+    ],
+    deps = [
+        "//nova_ecs:ecs",
+        "//nova_ecs/plugins",
+        "//novadatainterface",
+        "@npm//io-ts",
+        "@npm//fp-ts",
+        "@npm//uuid",
+    ],
+)
+
+ts_library(
+    name = "unit_test_sources",
+    testonly = True,
+    # All tests must end in "_test.ts" or jasmine won't recognize them!
+    srcs = [
+        "cargo_test.ts",
+        "cargo_decay_test.ts",
+        "date_test.ts",
+        "escort_ops_test.ts",
+        "legal_status_test.ts",
+        "pilot_files_test.ts",
+        "pilot_uuid_test.ts",
+        "ranks_test.ts",
+        "smuggling_test.ts",
+        "trade_test.ts",
+    ],
+    deps = [
+        ":player",
+        "//nova/src/missions:unit_test_sources",
+        "//novadatainterface",
+        "@npm//io-ts",
+        "@npm//fp-ts",
+        "@npm//@types/jasmine",
+    ],
+)
+
+jasmine_node_test(
+    name = "player_tests",
+    srcs = [":unit_test_sources"],
+)

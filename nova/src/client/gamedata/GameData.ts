@@ -1,13 +1,24 @@
 import { BaseData } from 'novadatainterface/BaseData';
+import { CharData } from 'novadatainterface/CharData';
 import { CicnData } from 'novadatainterface/CicnData';
+import { DescData } from 'novadatainterface/DescData';
+import { DudeData } from 'novadatainterface/DudeData';
+import { PersData } from 'novadatainterface/PersData';
+import { FleetData } from 'novadatainterface/FleetData';
+import { GovernmentData } from 'novadatainterface/GovernmentData';
 import { CicnImageData } from 'novadatainterface/CicnImage';
 import { ExplosionData } from 'novadatainterface/ExplosionData';
 import { GameDataInterface, PreloadData } from 'novadatainterface/GameDataInterface';
 import { Gettable } from 'novadatainterface/Gettable';
 import { NovaDataInterface, NovaDataType } from 'novadatainterface/NovaDataInterface';
 import { NovaIDs } from 'novadatainterface/NovaIDs';
+import { MissionData } from 'novadatainterface/MissionData';
+import { CronData } from 'novadatainterface/CronData';
 import { OutfitData } from 'novadatainterface/OutiftData';
 import { PictData } from 'novadatainterface/PictData';
+import { RankData } from 'novadatainterface/RankData';
+import { JunkData } from 'novadatainterface/JunkData';
+import { StringSetData } from 'novadatainterface/StringSetData';
 import { PictImageData } from 'novadatainterface/PictImage';
 import { PlanetData } from 'novadatainterface/PlanetData';
 import { ShipData } from 'novadatainterface/ShipData';
@@ -72,6 +83,17 @@ export class GameData implements GameDataInterface {
             Explosion: this.addGettable<ExplosionData>(NovaDataType.Explosion),
             SoundFile: this.addSoundFileGettable(),
             Sound: this.addSoundGettable(),
+            Mission: this.addGettable<MissionData>(NovaDataType.Mission),
+            Cron: this.addGettable<CronData>(NovaDataType.Cron),
+            Government: this.addGettable<GovernmentData>(NovaDataType.Government),
+            Dude: this.addGettable<DudeData>(NovaDataType.Dude),
+            Pers: this.addGettable<PersData>(NovaDataType.Pers),
+            Fleet: this.addGettable<FleetData>(NovaDataType.Fleet),
+            Rank: this.addGettable<RankData>(NovaDataType.Rank),
+            Junk: this.addGettable<JunkData>(NovaDataType.Junk),
+            StringSet: this.addGettable<StringSetData>(NovaDataType.StringSet),
+            Char: this.addGettable<CharData>(NovaDataType.Char),
+            Desc: this.addGettable<DescData>(NovaDataType.Desc),
         };
 
         this.preloadData = this.preload();

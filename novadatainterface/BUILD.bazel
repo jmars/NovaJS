@@ -2,28 +2,17 @@ package(default_visibility = ["//visibility:public"])
 
 load("//:defaults.bzl", "ts_library")
 load("@npm//@bazel/jasmine:index.bzl", "jasmine_node_test")
-load("//novadatainterface/scripts:pack_png.bzl", "pack_png")
+# default_pict.ts and default_rled.ts are generated from the corresponding
+# .png files by scripts/pack_png.ts; they are committed so that the package
+# can also be built without bazel (plain tsc / esbuild).
 load("@build_bazel_rules_nodejs//:index.bzl", "pkg_npm")
-
-pack_png(
-    name = "default_pict",
-    src = "default_pict.png",
-)
-
-pack_png(
-    name = "default_rled",
-    src = "default_rled.png",
-)
 
 ts_library(
     name = "novadatainterface",
     srcs = glob(
         ["*.ts"],
         exclude = ["*_test.ts"],
-    ) + [
-        ":default_pict",
-        ":default_rled",
-    ],
+    ),
     module_name = "novadatainterface",
     deps = [
         "@npm//@types/node",
@@ -39,6 +28,9 @@ ts_library(
         "@npm//@types/jasmine",
         "@npm//@types/node",
         "@npm//jasmine",
+        # expressions_test.ts loads the real data through NovaParse for its
+        # corpus check.
+        "//novaparse",
     ],
 )
 

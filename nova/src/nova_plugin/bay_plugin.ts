@@ -7,8 +7,6 @@ import { Vector } from 'nova_ecs/datatypes/vector';
 import { Entity } from 'nova_ecs/entity';
 import { Plugin } from 'nova_ecs/plugin';
 import { MovementStateComponent } from 'nova_ecs/plugins/movement_plugin';
-import { CommunicatorResource, MultiplayerData } from 'nova_ecs/plugins/multiplayer_plugin';
-import { Query } from 'nova_ecs/query';
 import { System } from 'nova_ecs/system';
 import { v4 } from 'uuid';
 import { HitboxHullComponent, HurtboxHullComponent } from './collisions_plugin';
@@ -77,19 +75,6 @@ class BayWeaponEntry extends WeaponEntry {
     }
 
     fire(position: Position, angle: Angle, owner: string, target = undefined, source: string, sourceVelocity?: Vector, exitPointData?: ExitPointData): Entity | undefined {
-        const q = this.runQuery(new Query([MultiplayerData, CommunicatorResource] as const), source);
-
-        // Do not fire if the owner is a multiplayer object not owned by us.
-        if (q.length > 0 && q[0][0].owner !== q[0][1].uuid) {
-            return;
-        }
-
-        const multiplayerOwner = q[0][1].uuid;
-        // Do not fire if we don't have a uuid yet.
-        if (! multiplayerOwner) {
-            return;
-        }
-
         let velocity = new Vector(0, 0);
         if (sourceVelocity) {
             velocity.add(sourceVelocity);
@@ -110,7 +95,6 @@ class BayWeaponEntry extends WeaponEntry {
             turning: 0,
         });
         ship.components.set(TargetComponent, { target: target });
-        ship.components.set(MultiplayerData, {owner: multiplayerOwner});
         if (target === undefined) {
             return undefined;
         }

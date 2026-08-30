@@ -8,7 +8,6 @@ import { Vector } from "nova_ecs/datatypes/vector";
 import { Optional } from "nova_ecs/optional";
 import { Plugin } from "nova_ecs/plugin";
 import { MovementState, MovementStateComponent } from "nova_ecs/plugins/movement_plugin";
-import { CommunicatorResource, MultiplayerData } from "nova_ecs/plugins/multiplayer_plugin";
 import { TimeResource } from "nova_ecs/plugins/time_plugin";
 import { Query } from "nova_ecs/query";
 import { Resource } from "nova_ecs/resource";
@@ -398,11 +397,7 @@ export const StatusBarPlugin: Plugin = {
             const shipData = await gameData.data.Ship.get(randomShipId);
 
             const npc = makeNpc(shipData);
-            const uuid = world.resources.get(CommunicatorResource)?.uuid;
-            if (uuid) {
-                npc.components.set(MultiplayerData, { owner: uuid });
-                world.entities.set(v4(), npc);
-            }
+            world.entities.set(v4(), npc);
         });
 
         world.resources.set(StatusBarResource, statusBar);

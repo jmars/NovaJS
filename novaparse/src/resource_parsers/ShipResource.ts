@@ -64,6 +64,10 @@ class ShipResource extends BaseResource {
     shortName: string;
     commName: string;
     longName: string;
+    // Raw shïp id this ship upgrades to (the escort upgrade chain), or null.
+    upgradeTo: number | null;
+    escortUpgradeCost: number;
+    escortSellValue: number;
     escortType: number;
 
     constructor(resource: Resource, idSpace: NovaResources) {
@@ -196,7 +200,13 @@ class ShipResource extends BaseResource {
         this.commName = getString(1550, 32);
         this.longName = getString(1582, 132);
 
-        this.escortType = d.getInt16(1829);
+        // Escort/fleet tail (EV Nova Bible shïp fields; offsets verified
+        // against the stock resources). UpgradeTo is a raw shïp id; ShipParse
+        // resolves it to a global id.
+        this.upgradeTo = maybeNull(d.getInt16(1832), 0);
+        this.escortUpgradeCost = d.getInt32(1834);
+        this.escortSellValue = d.getInt32(1838);
+        this.escortType = d.getInt16(1842);
     }
 }
 

@@ -1,14 +1,25 @@
 import * as fs from "fs";
 import { BaseData } from "novadatainterface/BaseData";
+import { CharData } from "novadatainterface/CharData";
 import { CicnData } from "novadatainterface/CicnData";
+import { DescData } from "novadatainterface/DescData";
+import { DudeData } from "novadatainterface/DudeData";
+import { PersData } from "novadatainterface/PersData";
+import { FleetData } from "novadatainterface/FleetData";
+import { GovernmentData } from "novadatainterface/GovernmentData";
 import { CicnImageData } from "novadatainterface/CicnImage";
 import { ExplosionData } from "novadatainterface/ExplosionData";
 import { GameDataInterface } from "novadatainterface/GameDataInterface";
 import { Gettable } from "novadatainterface/Gettable";
 import { NovaDataInterface } from "novadatainterface/NovaDataInterface";
 import { NovaIDs } from "novadatainterface/NovaIDs";
+import { MissionData } from "novadatainterface/MissionData";
+import { CronData } from "novadatainterface/CronData";
 import { OutfitData } from "novadatainterface/OutiftData";
 import { PictData } from "novadatainterface/PictData";
+import { RankData } from "novadatainterface/RankData";
+import { JunkData } from "novadatainterface/JunkData";
+import { StringSetData } from "novadatainterface/StringSetData";
 import { PictImageData } from "novadatainterface/PictImage";
 import { PlanetData } from "novadatainterface/PlanetData";
 import { ShipData } from "novadatainterface/ShipData";
@@ -43,6 +54,17 @@ const Paths = {
     StatusBar: { path: "StatusBar", extension: "json" } as PathInfo,
     Explosion: { path: "Explosion", extension: "json" } as PathInfo,
     SoundFile: { path: "SoundFile", extension: "mp3" } as PathInfo,
+    Mission: { path: "Mission", extension: "json" } as PathInfo,
+    Cron: { path: "Cron", extension: "json" } as PathInfo,
+    Government: { path: "Government", extension: "json" } as PathInfo,
+    Dude: { path: "Dude", extension: "json" } as PathInfo,
+    Pers: { path: "Pers", extension: "json" } as PathInfo,
+    Fleet: { path: "Fleet", extension: "json" } as PathInfo,
+    Rank: { path: "Rank", extension: "json" } as PathInfo,
+    Junk: { path: "Junk", extension: "json" } as PathInfo,
+    StringSet: { path: "StringSet", extension: "json" } as PathInfo,
+    Char: { path: "Char", extension: "json" } as PathInfo,
+    Desc: { path: "Desc", extension: "json" } as PathInfo,
 };
 
 class FilesystemData implements GameDataInterface {
@@ -67,6 +89,17 @@ class FilesystemData implements GameDataInterface {
             StatusBar: this.getFunction<StatusBarData>(Paths.StatusBar),
             Explosion: this.getFunction<ExplosionData>(Paths.Explosion),
             SoundFile: this.getFunction<SoundFile>(Paths.SoundFile),
+            Mission: this.getFunction<MissionData>(Paths.Mission),
+            Cron: this.getFunction<CronData>(Paths.Cron),
+            Government: this.getFunction<GovernmentData>(Paths.Government),
+            Dude: this.getFunction<DudeData>(Paths.Dude),
+            Pers: this.getFunction<PersData>(Paths.Pers),
+            Fleet: this.getFunction<FleetData>(Paths.Fleet),
+            Rank: this.getFunction<RankData>(Paths.Rank),
+            Junk: this.getFunction<JunkData>(Paths.Junk),
+            StringSet: this.getFunction<StringSetData>(Paths.StringSet),
+            Char: this.getFunction<CharData>(Paths.Char),
+            Desc: this.getFunction<DescData>(Paths.Desc),
         }
         this.ids = this.buildIDs();
     }
@@ -114,6 +147,17 @@ class FilesystemData implements GameDataInterface {
             StatusBar: await this.buildIDsForPath(Paths.StatusBar),
             Explosion: await this.buildIDsForPath(Paths.Explosion),
             SoundFile: await this.buildIDsForPath(Paths.SoundFile),
+            Mission: await this.buildIDsForPath(Paths.Mission),
+            Cron: await this.buildIDsForPath(Paths.Cron),
+            Government: await this.buildIDsForPath(Paths.Government),
+            Dude: await this.buildIDsForPath(Paths.Dude),
+            Pers: await this.buildIDsForPath(Paths.Pers),
+            Fleet: await this.buildIDsForPath(Paths.Fleet),
+            Rank: await this.buildIDsForPath(Paths.Rank),
+            Junk: await this.buildIDsForPath(Paths.Junk),
+            StringSet: await this.buildIDsForPath(Paths.StringSet),
+            Char: await this.buildIDsForPath(Paths.Char),
+            Desc: await this.buildIDsForPath(Paths.Desc),
         }
     }
 

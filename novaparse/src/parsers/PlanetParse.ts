@@ -9,6 +9,33 @@ import { SpobResource } from "../resource_parsers/SpobResource";
 import { BaseParse } from "./BaseParse";
 
 
+// The standard-commodity price bands live in the high flag bytes, one
+// nibble per commodity (Nova Bible spöb flags 2790-2813): commodity 0
+// (Food) occupies bits 28-31, 1 (Industrial) 24-27, and so on down to
+// 5 (Equipment) at bits 8-11. Within a nibble, bit 0x1 = low price,
+// 0x2 = medium, 0x4 = high; no bit = the planet won't trade that
+// commodity. Commodity c's nibble therefore sits at 28 - 4*c.
+export function planetPriceBands(flags: number): number[] {
+    const bands: number[] = [];
+    for (var commodity = 0; commodity < 6; commodity++) {
+        var nibble = (flags >>> (28 - 4 * commodity)) & 0xF;
+        if (nibble & 0x4) {
+            bands.push(3);
+        }
+        else if (nibble & 0x2) {
+            bands.push(2);
+        }
+        else if (nibble & 0x1) {
+            bands.push(1);
+        }
+        else {
+            bands.push(0);
+        }
+    }
+    return bands;
+}
+
+
 export async function PlanetParse(spob: SpobResource, notFoundFunction: (m: string) => void): Promise<PlanetData> {
     var base: BaseData = await BaseParse(spob, notFoundFunction);
 
@@ -63,6 +90,17 @@ export async function PlanetParse(spob: SpobResource, notFoundFunction: (m: stri
         }
     };
 
+    var govt: string | null = null;
+    if (spob.government > 0) {
+        var govtResource = spob.idSpace.gövt[spob.government];
+        if (govtResource) {
+            govt = govtResource.globalID;
+        }
+        else {
+            notFoundFunction("No matching gövt id " + spob.government + " for spöb of id " + base.id);
+        }
+    }
+
     return {
         ...base,
         landingDesc: desc,
@@ -84,6 +122,12 @@ export async function PlanetParse(spob: SpobResource, notFoundFunction: (m: stri
             turnRate: 0,
             inertialess: true,
         },
-        position: [spob.position[0], spob.position[1]]
+        position: [spob.position[0], spob.position[1]],
+        govt,
+        inhabited: (spob.flags & 0x20) === 0,
+        hasBar: (spob.flags & 0x40) !== 0,
+        tech: spob.techLevel,
+        hasTradeCenter: (spob.flags & 0x00000002) !== 0,
+        priceBands: planetPriceBands(spob.flags)
     }
 }

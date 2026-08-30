@@ -1,0 +1,60 @@
+package(default_visibility = ["//visibility:public"])
+
+load("//:defaults.bzl", "ts_library")
+load("@npm//@bazel/jasmine:index.bzl", "jasmine_node_test")
+
+# Pure mission logic: state machine, availability, filter decoders. No
+# PIXI/ECS imports so it stays headless testable.
+ts_library(
+    name = "missions",
+    srcs = [
+        "availability.ts",
+        "capture.ts",
+        "cron_scheduler.ts",
+        "mission_ship_goals.ts",
+        "mission_state_machine.ts",
+        "stellar_filter.ts",
+    ],
+    deps = [
+        "//nova/src/player",
+        "//novadatainterface",
+    ],
+)
+
+# ECS glue. Deliberately does not depend on //nova/src/nova_plugin (the
+# arrow points the other way; see the module header).
+ts_library(
+    name = "mission_glue",
+    srcs = [
+        "mission_plugin.ts",
+    ],
+    deps = [
+        ":missions",
+        "//nova/src/player",
+        "//nova_ecs:ecs",
+        "//novadatainterface",
+    ],
+)
+
+ts_library(
+    name = "unit_test_sources",
+    testonly = True,
+    srcs = [
+        "availability_test.ts",
+        "capture_test.ts",
+        "cron_scheduler_test.ts",
+        "mission_ship_goals_test.ts",
+        "mission_state_machine_test.ts",
+        "test_fixtures.ts",
+    ],
+    deps = [
+        ":missions",
+        "//novadatainterface",
+        "@npm//@types/jasmine",
+    ],
+)
+
+jasmine_node_test(
+    name = "missions_tests",
+    srcs = [":unit_test_sources"],
+)

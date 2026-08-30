@@ -19,7 +19,7 @@ function getValidTargets(targets: Array<readonly [string, any]>, selfUuid: strin
         .map(([uuid]) => uuid);
 }
 
-const ChooseRandomTargetComponent = new Component<{
+export const ChooseRandomTargetComponent = new Component<{
     interval: number,
     nextTime?: number,
 }>('ChooseRandomTargetComponent');
@@ -47,8 +47,14 @@ const ChooseRandomTargetAI = new System({
     }
 });
 
+// Which government a dude/fleet ship belongs to (P7 builds record
+// propagation on top; today it only tags the ship). Lives here — next to
+// the AI systems that read it — so npc_ai_plugin can use it without an
+// import cycle through dude.ts; dude.ts re-exports it.
+export const GovernmentComponent = new Component<{ id: string | null }>('Government');
+
 export const FollowComponent = new Component<undefined>('FollowComponent');
-const FollowAI = new System({
+export const FollowAI = new System({
     name: 'FollowAndShootAI',
     args: [MovementStateComponent, TargetComponent, FollowComponent] as const,
     step(movementState, target) {
@@ -58,7 +64,7 @@ const FollowAI = new System({
 });
 
 export const ShootAllWeaponsComponent = new Component<undefined>('ShootAllWeaponsComponent');
-const ShootAllWeaponsAI = new System({
+export const ShootAllWeaponsAI = new System({
     name: 'ShootAllWeaponsAI',
     args: [WeaponsStateComponent, GameDataResource, TargetComponent, ShootAllWeaponsComponent] as const,
     step(weapons, gameData, { target }) {

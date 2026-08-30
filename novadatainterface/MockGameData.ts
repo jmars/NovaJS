@@ -1,4 +1,14 @@
+import { getDefaultCharData } from "./CharData";
 import { getDefaultCicnData } from "./CicnData";
+import { getDefaultDescData } from "./DescData";
+import { getDefaultDudeData } from "./DudeData";
+import { getDefaultFleetData } from "./FleetData";
+import { getDefaultGovernmentData } from "./GovernmentData";
+import { getDefaultMissionData } from "./MissionData";
+import { getDefaultCronData } from "./CronData";
+import { getDefaultRankData } from "./RankData";
+import { getDefaultJunkData } from "./JunkData";
+import { getDefaultStringSetData } from "./StringSetData";
 import { getDefaultExplosionData } from "./ExplosionData";
 import { GameDataInterface } from "./GameDataInterface";
 import { Gettable } from "./Gettable";
@@ -7,6 +17,7 @@ import { NovaIDs } from "./NovaIDs";
 import { getDefaultOutfitData } from "./OutiftData";
 import { getDefaultPictData } from "./PictData";
 import { getDefaultPlanetData } from "./PlanetData";
+import { getDefaultPersData } from "./PersData";
 import { getDefaultShipData } from "./ShipData";
 import { getDefaultSoundFile } from "./SoundFile";
 import { getDefaultSpriteSheetData, getDefaultSpriteSheetFrames } from "./SpriteSheetData";
@@ -29,6 +40,9 @@ class MockGettable<T> extends Gettable<T> {
     override async get(id: string): Promise<T> {
         const val = this.map.get(id);
         if (val !== undefined) {
+            // Match Gettable.get's cache fill: game systems read data back
+            // synchronously via getCached.
+            this.gotten[id] = val;
             return val;
         }
         else if (this.defaultValue !== undefined) {
@@ -64,6 +78,17 @@ export class MockGameData implements GameDataInterface {
         TargetCorners: new MockGettable(getDefaultTargetCornersData()),
         Weapon: new MockGettable(getDefaultProjectileWeaponData()),
         SoundFile: new MockGettable(getDefaultSoundFile()),
+        Mission: new MockGettable(getDefaultMissionData()),
+        Cron: new MockGettable(getDefaultCronData()),
+        Government: new MockGettable(getDefaultGovernmentData()),
+        Dude: new MockGettable(getDefaultDudeData()),
+        Pers: new MockGettable(getDefaultPersData()),
+        Fleet: new MockGettable(getDefaultFleetData()),
+        Rank: new MockGettable(getDefaultRankData()),
+        Junk: new MockGettable(getDefaultJunkData()),
+        StringSet: new MockGettable(getDefaultStringSetData()),
+        Char: new MockGettable(getDefaultCharData()),
+        Desc: new MockGettable(getDefaultDescData()),
     };
     get ids(): Promise<NovaIDs> {
         const ids: NovaIDs = {} as NovaIDs;

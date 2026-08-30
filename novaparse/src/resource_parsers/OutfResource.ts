@@ -28,6 +28,9 @@ class OutfResource extends BaseResource {
     get cost(): number {
         return this.data.getInt32(14);
     }
+    get contribute(): [number, number] {
+        return [this.data.getInt32(32), this.data.getInt32(36)];
+    }
     get functions(): OutfitFunctions {
         var functions: OutfitFunctions = [];
         var modPositions = [6, 18, 22, 26];

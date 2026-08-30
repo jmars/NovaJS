@@ -47,6 +47,7 @@ const SavedControlsPartialObject = t.partial({
     'resetNav': ControlInputs,
     'land': ControlInputs,
     'tradeCenter': ControlInputs,
+    'fleet': ControlInputs,
     'shipyard': ControlInputs,
     'outfitter': ControlInputs,
     'missionBBS': ControlInputs,

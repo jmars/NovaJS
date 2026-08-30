@@ -9,8 +9,6 @@ ts_library(
     module_name = "nova_ecs/plugins",
     srcs = [
         "time_plugin.ts",
-        "multiplayer_plugin.ts",
-        "mock_communicator.ts",
         "movement_plugin.ts",
         "serializer_plugin.ts",
         #"modifier_plugin.ts",
@@ -32,7 +30,6 @@ ts_library(
     name = "plugins_test_lib",
     srcs = [
         "time_plugin_test.ts",
-        "multiplayer_plugin_test.ts",
         "movement_plugin_test.ts",
         "serializer_plugin_test.ts",
         #"modifier_plugin_test.ts",

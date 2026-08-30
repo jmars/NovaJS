@@ -16,12 +16,14 @@ ts_library(
         "@npm//@types/uuid",
         "@npm//express",
         "@npm//@types/express",
+        "@npm//io-ts",
+        "@npm//fp-ts",
         #"//nova/src/proto:protobufjs_bundle",
         "//novadatainterface",
         "//nova/src/server/parsing",
+        "//nova/src/player",
         #"//nova/src/engine",
         "//nova/src/common",
-        #"//nova/src/communication:communication_server_lib",
         #"//nova/src:gameloop_lib",
     ]
 )

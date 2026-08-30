@@ -20,6 +20,7 @@ export async function OutfitParse(outf: OutfResource, notFoundFunction: (m: stri
     // and objects enforce a "one value per key" requirement.
     var weapons: { [index: string]: number } = {};
     var physics: OutfitPhysics = { freeMass: outf.mass };
+    var marines = { crew: 0, oddsPercent: 0 };
 
     for (let i in outf.functions) {
         let func = outf.functions[i];
@@ -86,6 +87,19 @@ export async function OutfitParse(outf: OutfResource, notFoundFunction: (m: stri
             }
             physics[fType] = fVal;
         }
+        else if (fType === "marines") {
+            // ModType 25: ModVal >= 1 adds crew to the ship it's on;
+            // -1..-100 adds |ModVal| percent to capture odds (Bible).
+            if (typeof fVal !== "number") {
+                throw new Error("Wrong type. Expected number");
+            }
+            if (fVal >= 0) {
+                marines.crew += fVal;
+            }
+            else {
+                marines.oddsPercent += -fVal;
+            }
+        }
         else {
             //throw new Error("Unknown outfit function " + fType + " on outfit " + base.id);
         }
@@ -119,6 +133,8 @@ export async function OutfitParse(outf: OutfResource, notFoundFunction: (m: stri
         price: outf.cost,
         desc,
         displayWeight: outf.displayWeight,
-        max: outf.max
+        max: outf.max,
+        contribute: outf.contribute,
+        marines
     }
 }

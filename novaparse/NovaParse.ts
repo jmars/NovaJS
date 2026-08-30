@@ -1,10 +1,21 @@
 import * as path from "path";
+import { CharData } from "novadatainterface/CharData";
+import { DescData } from "novadatainterface/DescData";
+import { DudeData } from "novadatainterface/DudeData";
 import { ExplosionData } from "novadatainterface/ExplosionData";
+import { FleetData } from "novadatainterface/FleetData";
+import { GovernmentData } from "novadatainterface/GovernmentData";
+import { MissionData } from "novadatainterface/MissionData";
+import { CronData } from "novadatainterface/CronData";
+import { RankData } from "novadatainterface/RankData";
+import { JunkData } from "novadatainterface/JunkData";
+import { StringSetData } from "novadatainterface/StringSetData";
 import { GameDataInterface } from "novadatainterface/GameDataInterface";
 import { Gettable } from "novadatainterface/Gettable";
 import { NovaDataInterface, NovaIDNotFoundError } from "novadatainterface/NovaDataInterface";
 import { getDefaultNovaIDs, NovaIDs } from "novadatainterface/NovaIDs";
 import { OutfitData } from "novadatainterface/OutiftData";
+import { PersData } from "novadatainterface/PersData";
 import { PictData } from "novadatainterface/PictData";
 import { PictImageData } from "novadatainterface/PictImage";
 import { PlanetData } from "novadatainterface/PlanetData";
@@ -15,8 +26,19 @@ import { SystemData } from "novadatainterface/SystemData";
 import { TargetCornersData } from "novadatainterface/TargetCornersData";
 import { WeaponData } from "novadatainterface/WeaponData";
 import { IDSpaceHandler } from "./src/IDSpaceHandler";
+import { CharParse } from "./src/parsers/CharParse";
+import { DescParse } from "./src/parsers/DescParse";
+import { DudeParse } from "./src/parsers/DudeParse";
+import { PersParse } from "./src/parsers/PersParse";
 import { ExplosionParse } from "./src/parsers/ExplosionParse";
+import { FleetParse } from "./src/parsers/FleetParse";
+import { GovtParse } from "./src/parsers/GovtParse";
+import { MissionParse } from "./src/parsers/MissionParse";
+import { CronParse } from "./src/parsers/CronParse";
 import { OutfitParse } from "./src/parsers/OutfitParse";
+import { RankParse } from "./src/parsers/RankParse";
+import { JunkParse } from "./src/parsers/JunkParse";
+import { StringSetParse } from "./src/parsers/StringSetParse";
 import { PictImageMulti, PictImageMultiParse } from "./src/parsers/PictParse";
 import { PlanetParse } from "./src/parsers/PlanetParse";
 import { resourceIDNotFoundStrict, resourceIDNotFoundWarn } from "./src/parsers/ResourceIDNotFound";
@@ -28,7 +50,18 @@ import { TargetCornersParse } from "./src/parsers/TargetCornersParse";
 import { WeaponParse } from "./src/parsers/WeaponParse";
 import { BoomResource } from "./src/resource_parsers/BoomResource";
 import { BaseResource } from "./src/resource_parsers/NovaResourceBase";
+import { CharResource } from "./src/resource_parsers/CharResource";
+import { DescResource } from "./src/resource_parsers/DescResource";
+import { DudeResource } from "./src/resource_parsers/DudeResource";
+import { FleetResource } from "./src/resource_parsers/FleetResource";
+import { GovtResource } from "./src/resource_parsers/GovtResource";
+import { MisnResource } from "./src/resource_parsers/MisnResource";
+import { CronResource } from "./src/resource_parsers/CronResource";
 import { OutfResource } from "./src/resource_parsers/OutfResource";
+import { PersResource } from "./src/resource_parsers/PersResource";
+import { RankResource } from "./src/resource_parsers/RankResource";
+import { JunkResource } from "./src/resource_parsers/JunkResource";
+import { StrResource } from "./src/resource_parsers/StrResource";
 import { PictResource } from "./src/resource_parsers/PictResource";
 import { NovaResources, NovaResourceType, ResList } from "./src/resource_parsers/ResourceHolderBase";
 import { RledResource } from "./src/resource_parsers/RledResource";
@@ -143,6 +176,17 @@ export class NovaParse implements GameDataInterface {
             StatusBar: this.buildIDsForResource(idSpace.ïntf),
             Explosion: this.buildIDsForResource(idSpace.bööm),
             SoundFile: this.buildIDsForResource(idSpace["snd "]),
+            Mission: this.buildIDsForResource(idSpace.mïsn),
+            Cron: this.buildIDsForResource(idSpace.crön),
+            Government: this.buildIDsForResource(idSpace.gövt),
+            Dude: this.buildIDsForResource(idSpace.düde),
+            Pers: this.buildIDsForResource(idSpace.përs),
+            Fleet: this.buildIDsForResource(idSpace.flët),
+            Rank: this.buildIDsForResource(idSpace.ränk),
+            Junk: this.buildIDsForResource(idSpace.jünk),
+            StringSet: this.buildIDsForResource(idSpace[NovaResourceType.STRH]),
+            Char: this.buildIDsForResource(idSpace.chär),
+            Desc: this.buildIDsForResource(idSpace.dësc),
         }
     }
 
@@ -166,6 +210,17 @@ export class NovaParse implements GameDataInterface {
             StatusBar: this.makeGettable<BaseResource, StatusBarData>(NovaResourceType.ïntf, StatusBarParse),
             Explosion: this.makeGettable<BoomResource, ExplosionData>(NovaResourceType.bööm, ExplosionParse),
             SoundFile: this.makeGettable<SndResource, SoundFile>(NovaResourceType.snd, SoundFileParse),
+            Mission: this.makeGettable<MisnResource, MissionData>(NovaResourceType.mïsn, MissionParse),
+            Cron: this.makeGettable<CronResource, CronData>(NovaResourceType.crön, CronParse),
+            Government: this.makeGettable<GovtResource, GovernmentData>(NovaResourceType.gövt, GovtParse),
+            Dude: this.makeGettable<DudeResource, DudeData>(NovaResourceType.düde, DudeParse),
+            Pers: this.makeGettable<PersResource, PersData>(NovaResourceType.përs, PersParse),
+            Fleet: this.makeGettable<FleetResource, FleetData>(NovaResourceType.flët, FleetParse),
+            Rank: this.makeGettable<RankResource, RankData>(NovaResourceType.ränk, RankParse),
+            Junk: this.makeGettable<JunkResource, JunkData>(NovaResourceType.jünk, JunkParse),
+            StringSet: this.makeGettable<StrResource, StringSetData>(NovaResourceType.STRH, StringSetParse),
+            Char: this.makeGettable<CharResource, CharData>(NovaResourceType.chär, CharParse),
+            Desc: this.makeGettable<DescResource, DescData>(NovaResourceType.dësc, DescParse),
         }
 
         return data;

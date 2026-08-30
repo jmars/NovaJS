@@ -19,7 +19,8 @@ const OutfitState = t.type({
 });
 export type OutfitState = t.TypeOf<typeof OutfitState>;
 
-const OutfitsState = map(t.string /* Outfit id */, OutfitState);
+// Exported for the ship-snapshot codec (nova_plugin/ship_snapshot.ts).
+export const OutfitsState = map(t.string /* Outfit id */, OutfitState);
 export type OutfitsState = t.TypeOf<typeof OutfitsState>;
 
 export const OutfitsStateComponent = new Component<OutfitsState>('OutfitsStateComponent');
@@ -33,7 +34,16 @@ export function applyOutfitPhysics(basePhysics: ShipPhysics,
                 const key = uncast as keyof OutfitPhysics;
                 if (basePhysics.hasOwnProperty(key)) {
                     if (typeof val === 'number') {
-                        (basePhysics[key] as number) += val * count;
+                        // freeMass is the only subtracted field: ShipParse
+                        // pre-adds the mass of a ship's preinstalled outfits
+                        // into ShipPhysics.freeMass, and an outfit's freeMass
+                        // is the space it consumes (not a bonus), so carried
+                        // outfits must subtract it. This matches
+                        // purchase.freeMassOf, the documented reference. All
+                        // other fields (incl. freeCargo, which ShipParse
+                        // leaves raw) are genuine bonuses and add.
+                        const sign = key === 'freeMass' ? -1 : 1;
+                        (basePhysics[key] as number) += sign * val * count;
                     }
                 }
             }

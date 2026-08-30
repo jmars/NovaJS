@@ -1,16 +1,12 @@
 import { Entity } from "nova_ecs/entity";
 import { AddEvent } from "nova_ecs/events";
-import { multiplayer, MultiplayerData } from "nova_ecs/plugins/multiplayer_plugin";
 import { System } from "nova_ecs/system";
 import { World } from "nova_ecs/world";
 import * as PIXI from "pixi.js";
-import { firstValueFrom, take, filter } from "rxjs";
 import Stats from 'stats.js';
 import { v4 } from "uuid";
 import { GameData } from "./client/gamedata/GameData";
-import { CommunicatorClient } from "./communication/CommunicatorClient";
-import { MultiRoom } from "./communication/multi_room_communicator";
-import { SocketChannelClient } from "./communication/SocketChannelClient";
+import { CharData } from "novadatainterface/CharData";
 import { DebugSettings } from "./debug_settings";
 import { Display } from "./display/display_plugin";
 import { PixiAppResource } from "./display/pixi_app_resource";
@@ -20,9 +16,19 @@ import { GameDataResource } from "./nova_plugin/game_data_resource";
 import { FinishJumpEvent } from "./nova_plugin/jump_plugin";
 import { makeShip } from "./nova_plugin/make_ship";
 import { makeSystem } from "./nova_plugin/make_system";
-import { MultiRoomResource, NovaPlugin, SystemComponent } from "./nova_plugin/nova_plugin";
+import { NovaPlugin, SystemComponent } from "./nova_plugin/nova_plugin";
 import { PlayerShipSelector } from "./nova_plugin/player_ship_plugin";
+import { decodeShipSnapshot, snapshotPlayerShip } from "./nova_plugin/ship_snapshot";
 import { SystemIdResource } from "./nova_plugin/system_id_resource";
+import { PlayerState } from "./player/player_state";
+import { PlayerStateComponent, PlayerStateResource } from "./player/player_state_component";
+import {
+    DEFAULT_CHAR_ID,
+    createNewPilot,
+    deserializePlayerState,
+    serializePlayerState,
+} from "./player/pilot_files";
+import { getOrCreatePilotUuid } from "./player/pilot_uuid";
 
 
 const gameData = new GameData();
@@ -45,19 +51,71 @@ const app = new PIXI.Application({
 (window as any).app = app;
 document.body.appendChild(app.view as any);
 
-const channel = new SocketChannelClient({});
-const communicator = new CommunicatorClient(channel);
-(window as any).communicator = communicator;
-const multiRoom = new MultiRoom(communicator);
-(window as any).multiRoom = multiRoom;
-
 let world: World;
 let system: World | undefined;
+
+// --- Pilot persistence ---
+
+const PLAYER_STATE_SAVE_DEBOUNCE_MS = 2000;
+
+function pilotMirrorKey(uuid: string): string {
+    return "novajs-pilot-" + uuid;
+}
+
+// Reads the pilot for this browser's pilot uuid from the localStorage
+// mirror, falling back to a new pilot created from the default chär
+// (the full new-pilot intro UI arrives with P5).
+async function loadPlayerState():
+    Promise<{ state: PlayerState, charData: CharData, isNew: boolean }> {
+    const uuid = getOrCreatePilotUuid();
+    const ids = await gameData.ids;
+    const charData = await gameData.data.Char.get(ids.Char[0] ?? DEFAULT_CHAR_ID);
+
+    let state: PlayerState | null = null;
+    try {
+        const mirrored = window.localStorage.getItem(pilotMirrorKey(uuid));
+        if (mirrored !== null) {
+            state = deserializePlayerState(JSON.parse(mirrored));
+        }
+    }
+    catch (e) {
+        console.warn("Failed to load mirrored pilot", e);
+    }
+
+    if (!state) {
+        return {
+            state: createNewPilot(charData, Math.floor(Math.random() * 0x7fffffff)),
+            charData,
+            isNew: true,
+        };
+    }
+    return { state, charData, isNew: false };
+}
+
+// Saves immediately to the localStorage mirror.
+function savePlayerStateNow(uuid: string, state: PlayerState): void {
+    const file = JSON.stringify(serializePlayerState(state));
+    try {
+        window.localStorage.setItem(pilotMirrorKey(uuid), file);
+    }
+    catch (e) {
+        console.warn("Failed to mirror pilot to localStorage", e);
+    }
+}
+
+let saveTimeout: number | undefined;
+
+// Debounced save: call after every PlayerState mutation (P4+ wires the
+// mutation points); calls within the window coalesce into one save.
+function savePlayerState(uuid: string, state: PlayerState): void {
+    window.clearTimeout(saveTimeout);
+    saveTimeout = window.setTimeout(
+        () => savePlayerStateNow(uuid, state), PLAYER_STATE_SAVE_DEBOUNCE_MS);
+}
 
 async function jumpTo({ entity, to, uuid }: { entity: Entity, to: string, uuid: string }) {
     if (system) {
         system.entities.delete(uuid);
-        system.step(); // Let peers know the entity was removed
         const stage = system.resources.get(Stage);
         if (stage) {
             app.stage.removeChild(stage);
@@ -65,12 +123,12 @@ async function jumpTo({ entity, to, uuid }: { entity: Entity, to: string, uuid: 
         const currentSystemUuid = system.resources.get(SystemIdResource);
         if (currentSystemUuid) {
             world.entities.delete(currentSystemUuid);
-            multiRoom.leave(currentSystemUuid);
         }
-        await system.removePlugin(Display);
+        await system.removeAllPlugins();
     }
 
-    const newSystem = makeSystem(to, gameData);
+    // The player state survives system swaps by being shared between worlds.
+    const newSystem = makeSystem(to, gameData, world.resources.get(PlayerStateResource));
     (window as any).novaDebug = new DebugSettings(newSystem, (window as any).novaDebug);
 
     (window as any).system = newSystem;
@@ -84,18 +142,11 @@ async function jumpTo({ entity, to, uuid }: { entity: Entity, to: string, uuid: 
     app.stage.addChild(newStage);
     newStage.visible = true;
 
-    const room = multiRoom.join(to);
-    await newSystem.addPlugin(multiplayer(room));
-
     newSystem.events.get(FinishJumpEvent).subscribe(jumpTo);
 
     world.entities.set(to, new Entity()
         .addComponent(SystemComponent, newSystem));
 
-    // Wait for the server to connect
-    if (!room.peers.current.value.has('server')) {
-        await firstValueFrom(room.peers.join.pipe(filter(a => a === 'server')));
-    }
     newSystem.entities.set(uuid, entity);
     system = newSystem;
 }
@@ -103,20 +154,47 @@ async function jumpTo({ entity, to, uuid }: { entity: Entity, to: string, uuid: 
 async function startGame() {
     world = new World();
     world.resources.set(GameDataResource, gameData);
-    await world.addPlugin(multiplayer(multiRoom.join('main room')));
-    world.resources.set(MultiRoomResource, multiRoom);
     await world.addPlugin(NovaPlugin);
 
-    // Make the player's ship
-    const ids = await gameData.ids;
-    let randomShip = ids.Ship[Math.floor(Math.random() * ids.Ship.length)];
-    const shipData = await gameData.data.Ship.get(randomShip);
-    const shipEntity = makeShip(shipData);
-    shipEntity.components.set(MultiplayerData, {
-        owner: communicator.uuid!
-    });
+    // Load (or create) the pilot for this browser, and register it on the
+    // outer world so it is shared into every system world on jump.
+    const { state: playerState, charData, isNew } = await loadPlayerState();
+    world.resources.set(PlayerStateResource, playerState);
+
+    const uuid = getOrCreatePilotUuid();
+    (window as any).playerState = playerState;
+    (window as any).savePlayerState = () => savePlayerStateNow(uuid, playerState);
+    (window as any).queueSavePlayerState = () => savePlayerState(uuid, playerState);
+
+    // Make the player's ship: restore the snapshotted ship (type + outfits)
+    // when present; on a corrupt/stale snapshot fall back to the chär's
+    // starting ship and clear the snapshot so it doesn't fail forever.
+    let shipEntity = playerState.shipSnapshot
+        ? await decodeShipSnapshot(playerState.shipSnapshot, gameData)
+        : null;
+    if (!shipEntity && playerState.shipSnapshot) {
+        playerState.shipSnapshot = null;
+        savePlayerState(uuid, playerState);
+    }
+    if (!shipEntity) {
+        const ids = await gameData.ids;
+        const shipId = charData.startShipType ??
+            ids.Ship[Math.floor(Math.random() * ids.Ship.length)];
+        const shipData = await gameData.data.Ship.get(shipId);
+        shipEntity = makeShip(shipData);
+    }
+    shipEntity.components.set(PlayerStateComponent, playerState);
     shipEntity.components.set(PlayerShipSelector, undefined);
-    const systemId = 'nova:130';
+
+    // Persist the ship (type + outfits) so outfit/shipyard changes survive a
+    // reload. For a new pilot this is the first snapshot; the initial save
+    // below carries it.
+    snapshotPlayerShip(shipEntity, playerState);
+    if (isNew) {
+        savePlayerStateNow(uuid, playerState);
+    }
+
+    const systemId = playerState.currentSystem;
 
     await jumpTo({
         entity: shipEntity,

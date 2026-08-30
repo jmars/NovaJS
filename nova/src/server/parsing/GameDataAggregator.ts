@@ -2,7 +2,18 @@ import { GameDataInterface, PreloadData } from "novadatainterface/GameDataInterf
 import { NovaDataInterface, NovaDataType } from "novadatainterface/NovaDataInterface";
 import { Gettable, GettableData } from "novadatainterface/Gettable";
 import { BaseData } from "novadatainterface/BaseData";
+import { CharData } from "novadatainterface/CharData";
+import { DescData } from "novadatainterface/DescData";
+import { DudeData } from "novadatainterface/DudeData";
+import { PersData } from "novadatainterface/PersData";
+import { FleetData } from "novadatainterface/FleetData";
+import { GovernmentData } from "novadatainterface/GovernmentData";
+import { MissionData } from "novadatainterface/MissionData";
+import { CronData } from "novadatainterface/CronData";
+import { RankData } from "novadatainterface/RankData";
+import { JunkData } from "novadatainterface/JunkData";
 import { ShipData } from "novadatainterface/ShipData";
+import { StringSetData } from "novadatainterface/StringSetData";
 import { OutfitData } from "novadatainterface/OutiftData";
 import { WeaponData } from "novadatainterface/WeaponData";
 import { PictData } from "novadatainterface/PictData";
@@ -52,6 +63,17 @@ class GameDataAggregator implements GameDataInterface {
             StatusBar: this.makeAggregator<StatusBarData>(NovaDataType.StatusBar),
             Explosion: this.makeAggregator<ExplosionData>(NovaDataType.Explosion),
             SoundFile: this.makeAggregator<SoundFile>(NovaDataType.SoundFile),
+            Mission: this.makeAggregator<MissionData>(NovaDataType.Mission),
+            Cron: this.makeAggregator<CronData>(NovaDataType.Cron),
+            Government: this.makeAggregator<GovernmentData>(NovaDataType.Government),
+            Dude: this.makeAggregator<DudeData>(NovaDataType.Dude),
+            Pers: this.makeAggregator<PersData>(NovaDataType.Pers),
+            Fleet: this.makeAggregator<FleetData>(NovaDataType.Fleet),
+            Rank: this.makeAggregator<RankData>(NovaDataType.Rank),
+            Junk: this.makeAggregator<JunkData>(NovaDataType.Junk),
+            StringSet: this.makeAggregator<StringSetData>(NovaDataType.StringSet),
+            Char: this.makeAggregator<CharData>(NovaDataType.Char),
+            Desc: this.makeAggregator<DescData>(NovaDataType.Desc),
         };
 
         this.ids = this.getAllIDs();

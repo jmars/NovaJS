@@ -21,6 +21,13 @@ filegroup(
     ]
 )
 
+filegroup(
+    name = "verify_data_goldens",
+    srcs = [
+        "fixtures/context_goldens.json",
+    ]
+)
+
 ts_library(
     name = "unit_test_sources",
     testonly = True,
@@ -28,6 +35,7 @@ ts_library(
         "IDSpaceHandler_test.ts",
         "NovaParse_test.ts",
         "readNovaFile_test.ts",
+        "verify_data_test.ts",
     ],
     deps = [
         "//novaparse/src:novaparse_libraries",
@@ -50,6 +58,7 @@ jasmine_node_test(
     data = [
         "//novaparse/test/resource_parsers/files",
         ":novaparse_test_files",
+        ":verify_data_goldens",
         "//novadatainterface",
     ]
 )

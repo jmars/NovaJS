@@ -75,3 +75,6 @@ node_modules
 
 # Bazel
 .bazelrc.user
+# esbuild bundle artifacts
+*_bundle.js
+*_bundle.js.map

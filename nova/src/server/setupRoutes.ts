@@ -60,6 +60,13 @@ class GameDataServer {
             res.sendFile(this.bundleMapPath);
         });
 
+        // Player state is localStorage-only now; the /playerState routes are
+        // gone. 404 explicitly so requests don't fall through to the SPA
+        // catch-all below.
+        this.app.use("/playerState", (_req: express.Request, res: express.Response) => {
+            res.status(404).send("Player state is stored client-side");
+        });
+
         this.app.use("/", (_req: express.Request, res: express.Response) => {
             res.sendFile(this.htmlPath);
         });
