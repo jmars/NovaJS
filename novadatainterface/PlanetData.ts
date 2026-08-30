@@ -10,6 +10,8 @@ export interface PlanetData extends SpaceObjectData {
     hasBar: boolean;       // spöb flag 0x00000040
     tech: number;          // tech level, controls outfit/ship availability
     hasTradeCenter: boolean; // spöb flag 0x00000002 (commodity exchange)
+    hasOutfitter: boolean; // spöb flag 0x00000004
+    hasShipyard: boolean;  // spöb flag 0x00000008
     // Price band per standard commodity (STR# 4000 order: 0 Food,
     // 1 Industrial, 2 Medical Supplies, 3 Luxury Goods, 4 Metal,
     // 5 Equipment). Decoded from the spöb price-band flag nibbles:
@@ -29,6 +31,8 @@ export function getDefaultPlanetData(): PlanetData {
         hasBar: false,
         tech: 0,
         hasTradeCenter: false,
+        hasOutfitter: false,
+        hasShipyard: false,
         priceBands: [0, 0, 0, 0, 0, 0]
     };
 }

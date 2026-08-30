@@ -37,6 +37,11 @@ import {
     SystemMatchContext,
     systemMatchesSystemFilter,
 } from "../missions/stellar_filter";
+import {
+    govtsAreAllies,
+    govtsAreClassmates,
+    govtsAreEnemies,
+} from "../player/legal_status";
 import { ControlBits, PlayerState } from "../player/player_state";
 import { PlayerStateResource } from "../player/player_state_component";
 import { randInt, seedRng } from "../player/pilot_files";
@@ -214,6 +219,51 @@ function systemHasInhabitedPlanet(systemData: SystemData,
     return systemData.planets.some(id => env.planet(id)?.inhabited ?? false);
 }
 
+// The system's government, from its planets' spöb gövts: the first
+// inhabited planet's govt wins, falling back to any planet's govt. Null
+// when no planet has one (an independent system).
+export function systemGovernmentId(systemData: SystemData,
+    env: MissionEnv): string | null {
+    let fallback: string | null = null;
+    for (const id of systemData.planets) {
+        const planet = env.planet(id);
+        if (!planet || planet.govt === null) {
+            continue;
+        }
+        if (planet.inhabited) {
+            return planet.govt;
+        }
+        fallback ??= planet.govt;
+    }
+    return fallback;
+}
+
+// Ambient-population govt gate: a system's ambient ships are mostly its OWN
+// government plus civilians (in EV Nova hostile warships are the rare
+// exception, not the norm), so a pers/flët is eligible here only when its
+// government is the system's, neutral (null), or an ally/classmate of the
+// system's — an enemy or unrelated government's 'any system' entries do
+// not blanket-spawn hostile ships into every system. Unresolvable
+// governments stay eligible (fail open, like LinkSyst -1).
+export function ambientGovtEligible(govtId: string | null,
+    systemGovtId: string | null, env: MissionEnv): boolean {
+    if (govtId === null || systemGovtId === null || govtId === systemGovtId) {
+        return true;
+    }
+    const govt = env.government(govtId);
+    const systemGovt = env.government(systemGovtId);
+    if (!govt || !systemGovt) {
+        return true;
+    }
+    if (govtsAreEnemies(govt, systemGovt)
+        || govtsAreEnemies(systemGovt, govt)) {
+        return false;
+    }
+    return govtsAreAllies(govt, systemGovt)
+        || govtsAreAllies(systemGovt, govt)
+        || govtsAreClassmates(govt, systemGovt);
+}
+
 // LinkSyst -1 matches any system; otherwise it uses the mïsn system filter
 // codes (specific ids, the near bands and the govt relation bands).
 function fleetActive(fleet: FleetData, state: PlayerState, systemId: string,
@@ -253,7 +303,10 @@ function fleetActive(fleet: FleetData, state: PlayerState, systemId: string,
             return false;
         }
     }
-    return true;
+    // The ambient-population govt gate (see ambientGovtEligible): the
+    // system's population is mostly its own government + civilians.
+    return ambientGovtEligible(fleet.govt,
+        systemGovernmentId(systemData, env), env);
 }
 
 // Spawns the flët's ships and returns its hyperspace-entry quote text

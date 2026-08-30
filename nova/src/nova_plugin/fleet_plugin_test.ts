@@ -15,19 +15,23 @@ import { MockGameData } from "novadatainterface/MockGameData";
 import { FleetData, getDefaultFleetData } from "novadatainterface/FleetData";
 import { getDefaultStringSetData } from "novadatainterface/StringSetData";
 import { getDefaultShipData } from "novadatainterface/ShipData";
+import { getDefaultSystemData } from "novadatainterface/SystemData";
 import { Entity } from "nova_ecs/entity";
 import { World } from "nova_ecs/world";
 import { randInt, seedRng } from "../player/pilot_files";
 import { GameDataResource } from "./game_data_resource";
 import { SystemIdResource } from "./system_id_resource";
 import {
+    ambientGovtEligible,
     AMBIENT_GATE,
     FleetPlugin,
     FleetQuotesResource,
     MAX_AMBIENT_SHIPS,
+    systemGovernmentId,
 } from "./fleet_plugin";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import {
+    makePlanet,
     makePlayerState,
     makeTestEnv,
     PLANETS,
@@ -304,5 +308,72 @@ describe("fleet hyperspace-entry quote", () => {
         const first = await makeTestWorld(INHABITED_SYSTEM, undefined, state);
         const second = await makeTestWorld(INHABITED_SYSTEM, undefined, state);
         expect(first.quotes()).toEqual(second.quotes());
+    });
+});
+
+describe("flët ambient govt gate", () => {
+    // INHABITED_SYSTEM's planet nova:130 (START) is Federation govt
+    // nova:128: Ally Govt (nova:129) is its ally, Polaris (nova:130) its
+    // mutual enemy, Rebels (nova:141) unrelated. A system's ambient
+    // population is mostly its own government + civilians.
+    it("spawns flëts of the system's own, allied or neutral government",
+        async () => {
+            for (const govt of [null, "nova:128", "nova:129"]) {
+                const { fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
+                    [[FLEET_ID, { ...FLEET, govt }]],
+                    makePlayerState(findSeed(1, true)));
+                expect(fleetShips()).toEqual([`fleet-ship ${FLEET_ID} 0`]);
+            }
+        });
+
+    it("does not spawn enemy or unrelated-government flëts", async () => {
+        for (const govt of ["nova:130", "nova:141"]) {
+            const { fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
+                [[FLEET_ID, { ...FLEET, govt }]],
+                makePlayerState(findSeed(1, true)));
+            expect(fleetShips()).toEqual([]);
+        }
+    });
+});
+
+describe("ambient system-government resolution", () => {
+    // A govt outpost with no inhabited planet still names the system's
+    // government (the fallback rule).
+    const OUTPOST = makePlanet("nova:142", "Lifeless Outpost", [6, 6],
+        { govt: "nova:130", inhabited: false });
+    PLANETS.set(OUTPOST.id, OUTPOST);
+
+    it("takes the inhabited planet's govt, falling back to any planet govt",
+        () => {
+            const { env } = makeTestEnv();
+            // nova:302: Earth (inhabited, govt nova:128) then Vell-os
+            // Prime (govt nova:136) — the first inhabited govt wins.
+            expect(systemGovernmentId(SYSTEMS.get("nova:302")!, env))
+                .toEqual("nova:128");
+            // BARREN_SYSTEM holds only Barren Rock (nova:140, no govt).
+            expect(systemGovernmentId(SYSTEMS.get(BARREN_SYSTEM)!, env))
+                .toBeNull();
+
+            expect(systemGovernmentId({
+                ...getDefaultSystemData(),
+                id: "outpost-system",
+                links: [],
+                planets: ["nova:140", OUTPOST.id],
+            }, env)).toEqual("nova:130");
+        });
+
+    it("eligibility: system govt, civilians, allies and classmates pass;"
+        + " enemies and unrelated govts do not", () => {
+        const { env } = makeTestEnv();
+        const fed = "nova:128";
+        expect(ambientGovtEligible(null, fed, env)).toBeTrue();
+        expect(ambientGovtEligible(fed, fed, env)).toBeTrue();
+        expect(ambientGovtEligible("nova:129", fed, env)).toBeTrue();
+        expect(ambientGovtEligible("nova:136", fed, env)).toBeTrue();
+        expect(ambientGovtEligible("nova:130", fed, env)).toBeFalse();
+        expect(ambientGovtEligible("nova:141", fed, env)).toBeFalse();
+        // No resolvable system govt: unrestricted.
+        expect(ambientGovtEligible("nova:130", null, env)).toBeTrue();
+        expect(ambientGovtEligible("nova:130", "nova:999", env)).toBeTrue();
     });
 });

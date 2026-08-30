@@ -278,6 +278,31 @@ describe("përs spawn", () => {
     });
 });
 
+describe("përs ambient govt gate", () => {
+    // nova:300's planet nova:130 (START) is Federation govt nova:128: the
+    // fixture graph makes Polaris (nova:130) its mutual enemy, Ally Govt
+    // (nova:129) its ally, Vell-os (nova:136) its classmate and Rebels
+    // (nova:141) unrelated. A system's ambient population is mostly its
+    // own government + civilians, so only those spawn here.
+    it("spawns përs of the system's own, allied, classmate or no government",
+        async () => {
+            for (const govt of [null, "nova:128", "nova:129", "nova:136"]) {
+                const { persShips } = await makeTestWorld(SYSTEM_ID,
+                    makePlayerState(SPAWN_SEED), { govt });
+                expect(persShips()).toEqual([`pers-ship ${PERS_ID}`]);
+            }
+        });
+
+    it("does not spawn enemy or unrelated-government përs", async () => {
+        for (const govt of ["nova:130" /* Polaris: mutual enemy */,
+            "nova:141" /* Rebels: unrelated */]) {
+            const { persShips } = await makeTestWorld(SYSTEM_ID,
+                makePlayerState(SPAWN_SEED), { govt });
+            expect(persShips()).toEqual([]);
+        }
+    });
+});
+
 describe("përs one-draw spawn model", () => {
     it("spawns at most one përs per pass (one table draw)", async () => {
         // FUN_004235c0 draws ONE slot per pass: a hit warps in exactly one

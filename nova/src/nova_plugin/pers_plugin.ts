@@ -43,9 +43,11 @@ import {
     AMBIENT_GATE,
     AMBIENT_ROLL_INTERVAL_FRAMES,
     AmbientSeedResource,
+    ambientGovtEligible,
     ambientShipCount,
     MAX_AMBIENT_SHIPS,
     playerPosition,
+    systemGovernmentId,
     warpInAt,
 } from "./fleet_plugin";
 import { makeDudeShip, setNoCollision } from "./dude";
@@ -232,7 +234,10 @@ function persActive(pers: PersData, state: PlayerState, systemId: string,
             return false;
         }
     }
-    return true;
+    // The ambient-population govt gate (see ambientGovtEligible): the
+    // system's population is mostly its own government + civilians.
+    return ambientGovtEligible(pers.govt,
+        systemGovernmentId(systemData, env), env);
 }
 
 function spawnPers(entities: EntityMap, shipData: ShipData, pers: PersData,

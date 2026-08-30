@@ -165,17 +165,26 @@ export async function verifyParsedData(
             }
         }
 
-        // Trade centers: the spöb count carrying the exchange flag, plus a
+        // Facility spöbs: the exchange/shipyard/outfitter counts (the
+        // buttons the spaceport shows must match the planet flags), plus a
         // priceBands sanity sweep over every planet (the nibble bit-decode
         // can only produce 0-3 and always 6 entries — anything else means
         // the flags offset or decode regressed).
         if (goldens.tradeSpobCount !== null && goldens.tradeSpobCount !== undefined) {
             checks += 1;
             var tradeSpobs = 0;
+            var shipyardSpobs = 0;
+            var outfitterSpobs = 0;
             for (var planetID of ids.Planet) {
                 var planetData: PlanetData = await novaParse.data[NovaDataType.Planet].get(planetID);
                 if (planetData.hasTradeCenter) {
                     tradeSpobs += 1;
+                }
+                if (planetData.hasShipyard) {
+                    shipyardSpobs += 1;
+                }
+                if (planetData.hasOutfitter) {
+                    outfitterSpobs += 1;
                 }
                 var bands = planetData.priceBands;
                 if (bands.length !== 6 || bands.some(function(band) {
@@ -186,6 +195,16 @@ export async function verifyParsedData(
             }
             if (tradeSpobs !== goldens.tradeSpobCount) {
                 failures.push("trade spöb count: expected " + goldens.tradeSpobCount + ", got " + tradeSpobs);
+            }
+            if (goldens.shipyardSpobCount !== undefined
+                && shipyardSpobs !== goldens.shipyardSpobCount) {
+                failures.push("shipyard spöb count: expected " + goldens.shipyardSpobCount
+                    + ", got " + shipyardSpobs);
+            }
+            if (goldens.outfitterSpobCount !== undefined
+                && outfitterSpobs !== goldens.outfitterSpobCount) {
+                failures.push("outfitter spöb count: expected " + goldens.outfitterSpobCount
+                    + ", got " + outfitterSpobs);
             }
         }
 

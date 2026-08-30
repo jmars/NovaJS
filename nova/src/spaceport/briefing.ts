@@ -36,6 +36,24 @@ export interface ButtonLabels {
 
 const FALLBACK_LABELS: ButtonLabels = { accept: "Accept", refuse: "Decline", okay: "Okay" };
 
+// Geometry of the nova:8502 backdrop, measured from its png: a 765×321
+// panel drawn centered (x -382.5..382.5, y -160.5..160.5) with three carved
+// boxes — text on the left (x -374.5..-42.5, y -154.5..115.5), pict
+// top-right (x 171.5..373.5, y -156.5..47.5) and buttons bottom-right
+// (x 171.5..373.5, y 49.5..153.5). Every element below is positioned inside
+// its box; a width-100 button is 126 wide including its end caps.
+const TEXT_POS = { x: -360, y: -140 };
+const PICT_POS = { x: 174, y: -152.5 };
+const BUTTON_X = 210;
+const ACCEPT_Y = 64;
+const REFUSE_Y = 103;
+const LONE_BUTTON_Y = 89; // a single button, centered in the button box
+
+// The Mission BBS shares the same backdrop: its list draws in the text box
+// and its Done button sits in the button box.
+export const BBS_LIST_POS = TEXT_POS;
+export const BBS_DONE_POS = { x: BUTTON_X, y: LONE_BUTTON_Y };
+
 export interface BriefingInput {
     text: string;          // already mission_text-expanded
     graphic: number;       // PICT id; below 128 shows no graphic
@@ -69,12 +87,12 @@ export class BriefingDialog extends Menu<MissionDialogResult> {
         super(gameData, "nova:8502", controlEvents);
         this.container.name = 'BriefingDialog';
 
-        this.text.position.x = -140;
-        this.text.position.y = -180;
+        this.text.position.x = TEXT_POS.x;
+        this.text.position.y = TEXT_POS.y;
         this.container.addChild(this.text);
 
-        this.pictContainer.position.x = 174;
-        this.pictContainer.position.y = -152.5;
+        this.pictContainer.position.x = PICT_POS.x;
+        this.pictContainer.position.y = PICT_POS.y;
         this.container.addChild(this.pictContainer);
 
         this.controls.controls = {
@@ -146,9 +164,10 @@ export class BriefingDialog extends Menu<MissionDialogResult> {
             this.container.removeChild(this.refuseButton.container);
         }
         this.acceptButton = new Button(this.gameData, input.acceptLabel, 100,
-            { x: -110, y: 170 });
+            { x: BUTTON_X, y: input.canRefuse ? ACCEPT_Y : LONE_BUTTON_Y });
         this.refuseButton = input.canRefuse
-            ? new Button(this.gameData, input.refuseLabel, 100, { x: 10, y: 170 })
+            ? new Button(this.gameData, input.refuseLabel, 100,
+                { x: BUTTON_X, y: REFUSE_Y })
             : undefined;
         this.acceptButton.click.subscribe(this.accept.bind(this));
         if (this.refuseButton) {
@@ -191,8 +210,8 @@ export class TextDialog extends Menu<void> {
         private buttonLabel = FALLBACK_LABELS.okay) {
         super(gameData, "nova:8502", controlEvents);
 
-        this.text.position.x = -140;
-        this.text.position.y = -180;
+        this.text.position.x = TEXT_POS.x;
+        this.text.position.y = TEXT_POS.y;
         this.container.addChild(this.text);
 
         this.controls.controls = {
@@ -207,7 +226,7 @@ export class TextDialog extends Menu<void> {
         this.text.text = text;
         if (!this.okayButton) {
             this.okayButton = new Button(this.gameData, this.buttonLabel, 100,
-                { x: -50, y: 170 });
+                { x: BBS_DONE_POS.x, y: BBS_DONE_POS.y });
             this.okayButton.click.subscribe(this.close.bind(this));
             this.addButtons({ okay: this.okayButton });
         }

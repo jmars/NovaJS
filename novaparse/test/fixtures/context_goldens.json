@@ -217,7 +217,9 @@
     3,
     2,
     0
-   ]
+   ],
+   "hasShipyard": true,
+   "hasOutfitter": true
   },
   "nova:129": {
    "hasTradeCenter": false,
@@ -228,7 +230,9 @@
     0,
     0,
     0
-   ]
+   ],
+   "hasShipyard": false,
+   "hasOutfitter": false
   },
   "nova:263": {
    "hasTradeCenter": true,
@@ -239,7 +243,9 @@
     0,
     2,
     3
-   ]
+   ],
+   "hasShipyard": false,
+   "hasOutfitter": false
   }
  },
  "tradeSpobCount": 162,
@@ -321,5 +327,7 @@
    "escortUpgradeCost": 1500000,
    "escortSellValue": 0
   }
- }
+ },
+ "shipyardSpobCount": 75,
+ "outfitterSpobCount": 154
 }

@@ -29,7 +29,7 @@ import { activeRankContributes } from '../player/ranks';
 import { queuePlayerStateSave } from '../missions/mission_plugin';
 import { rawIdOf } from '../missions/stellar_filter';
 import { Button } from './button';
-import { BriefingDialog, BriefingInput, ButtonLabels, GameMissionTextEnv } from './briefing';
+import { BriefingDialog, BriefingInput, ButtonLabels, BBS_DONE_POS, BBS_LIST_POS, GameMissionTextEnv } from './briefing';
 import { Menu } from './menu';
 import {
     expandMissionText,
@@ -278,7 +278,10 @@ export class MissionBBS extends Menu<void> {
         super(gameData, "nova:8502", controlEvents);
         this.container.name = 'MissionBBS';
 
-        this.doneButton = new Button(gameData, "Done", 100, { x: -50, y: 200 });
+        // Done sits in the button box of the 8502 panel (see briefing.ts
+        // for the backdrop geometry).
+        this.doneButton = new Button(gameData, "Done", 100,
+            { x: BBS_DONE_POS.x, y: BBS_DONE_POS.y });
         this.doneButton.click.subscribe(() => this.picked.next(null));
         this.addButtons({ done: this.doneButton });
 
@@ -332,10 +335,11 @@ export class MissionBBS extends Menu<void> {
 
     private drawList(offers: MissionOffer[]) {
         this.listContainer.removeChildren();
-        let y = -180;
+        // Entries fill the text box of the 8502 panel (see briefing.ts).
+        let y = BBS_LIST_POS.y;
         for (const offer of offers) {
             const entry = new PIXI.Text(offer.listText, FONT.entry);
-            entry.position.x = -140;
+            entry.position.x = BBS_LIST_POS.x;
             entry.position.y = y;
             entry.interactive = true;
             entry.cursor = 'pointer';

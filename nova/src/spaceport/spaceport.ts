@@ -69,6 +69,11 @@ export class Spaceport extends Menu<Entity> {
     private missionInfo?: MissionInfo;
 
     private showBBS = async () => {
+        // Uninhabited planets have no mission BBS (spöb flag 0x00020 set);
+        // this also gates the keyboard shortcut on them.
+        if (this.data && !this.data.inhabited) {
+            return;
+        }
         this.controls.unbind();
         const offers = await computeOffers('bbs', await this.missionUi());
         await this.missionBBS!.showOffers(offers);
@@ -79,6 +84,72 @@ export class Spaceport extends Menu<Entity> {
         this.controls.unbind();
         const offers = await computeOffers('bar', await this.missionUi());
         await this.bar!.showOffers(offers);
+        this.controls.bind();
+    };
+
+    private showOutfitter = async () => {
+        // Only planets with an outfitter (spöb flag 0x00004) offer one;
+        // this also gates the keyboard shortcut on them.
+        if (this.data && !this.data.hasOutfitter) {
+            return;
+        }
+        this.controls.unbind();
+        const outfits = this.input.components.get(OutfitsStateComponent) ?? new Map();
+        const missions = this.missions;
+        if (missions) {
+            this.outfitter.setPurchases({
+                credits: () => missions.playerState.credits,
+                setCredits: credits => {
+                    missions.playerState.credits = credits;
+                    queuePlayerStateSave();
+                },
+                priceMod: this.getPriceMod(),
+                freeMass: await this.currentFreeMass(outfits),
+            });
+        }
+        const newOutfits = await this.outfitter.show(outfits);
+        this.input.components.set(OutfitsStateComponent, newOutfits);
+        // Delete these so they are re-created with the new outfits.
+        // TODO: Find a better way to do this.
+        this.input.components.delete(WeaponsStateComponent);
+        this.input.components.delete(ShipPhysicsComponent);
+        this.controls.bind();
+    };
+
+    private showShipyard = async () => {
+        // Only planets with a shipyard (spöb flag 0x00008) offer one; this
+        // also gates the keyboard shortcut on them.
+        if (this.data && !this.data.hasShipyard) {
+            return;
+        }
+        this.controls.unbind();
+        const missions = this.missions;
+        if (missions) {
+            this.shipyard.setPurchases({
+                credits: () => missions.playerState.credits,
+                setCredits: credits => {
+                    missions.playerState.credits = credits;
+                    queuePlayerStateSave();
+                },
+                priceMod: this.getPriceMod(),
+            });
+        }
+        const newInput = await this.shipyard.show(this.input);
+        if (newInput !== this.input) {
+            // Construct a fake system and run providers so that outfits of the new
+            // ship are provided.
+            const shipBuildWorld = new World('outfit builder');
+            shipBuildWorld.resources.set(GameDataResource, this.gameData);
+            shipBuildWorld.resources.set(SystemIdResource, 'nova:128');
+            await shipBuildWorld.addPlugin(SystemPlugin);
+            shipBuildWorld.entities.set('ship', newInput);
+            shipBuildWorld.step();
+            await shipBuildWorld.resources.get(AsyncSystemResource)?.done;
+            shipBuildWorld.step();
+            shipBuildWorld.entities.delete('ship');
+        }
+        this.input = newInput;
+
         this.controls.bind();
     };
 
@@ -246,78 +317,17 @@ export class Spaceport extends Menu<Entity> {
         super(gameData, "nova:8500", controlEvents);
         this.container.name = 'Spaceport';
 
-        const buttons = {
-            shipyard: new Button(gameData, "Shipyard", 120, { x: 160, y: 32 }),
-            outfitter: new Button(gameData, "Outfitter", 120, { x: 160, y: 74 }),
-            missionBBS: new Button(gameData, "Mission BBS", 120, { x: 160, y: 158 }),
-            leave: new Button(gameData, "Leave", 120, { x: 160, y: 200 })
-        };
-
-        buttons.leave.click.subscribe(this.done.bind(this));
+        // The Leave button exists on every planet; the Shipyard, Outfitter
+        // and Mission BBS buttons are added in build() once the planet data
+        // is known, matching the Bar/Trade Center/Fleet pattern there.
+        const leave = new Button(gameData, "Leave", 120, { x: 160, y: 200 });
+        leave.click.subscribe(this.done.bind(this));
+        this.addButtons({ leave });
 
         this.outfitter = new Outfitter(gameData, controlEvents);
-        const showOutfitter = async () => {
-            this.controls.unbind();
-            const outfits = this.input.components.get(OutfitsStateComponent) ?? new Map();
-            const missions = this.missions;
-            if (missions) {
-                this.outfitter.setPurchases({
-                    credits: () => missions.playerState.credits,
-                    setCredits: credits => {
-                        missions.playerState.credits = credits;
-                        queuePlayerStateSave();
-                    },
-                    priceMod: this.getPriceMod(),
-                    freeMass: await this.currentFreeMass(outfits),
-                });
-            }
-            const newOutfits = await this.outfitter.show(outfits);
-            this.input.components.set(OutfitsStateComponent, newOutfits);
-            // Delete these so they are re-created with the new outfits.
-            // TODO: Find a better way to do this.
-            this.input.components.delete(WeaponsStateComponent);
-            this.input.components.delete(ShipPhysicsComponent);
-            this.controls.bind();
-        };
-        buttons.outfitter.click.subscribe(showOutfitter);
-
         this.shipyard = new Shipyard(gameData, controlEvents);
         this.tradeCenter = new TradeCenter(gameData, controlEvents);
         this.fleetDialog = new FleetDialog(gameData, controlEvents);
-
-        const showShipyard = async () => {
-            this.controls.unbind();
-            const missions = this.missions;
-            if (missions) {
-                this.shipyard.setPurchases({
-                    credits: () => missions.playerState.credits,
-                    setCredits: credits => {
-                        missions.playerState.credits = credits;
-                        queuePlayerStateSave();
-                    },
-                    priceMod: this.getPriceMod(),
-                });
-            }
-            const newInput = await this.shipyard.show(this.input);
-            if (newInput !== this.input) {
-                // Construct a fake system and run providers so that outfits of the new
-                // ship are provided.
-                const shipBuildWorld = new World('outfit builder');
-                shipBuildWorld.resources.set(GameDataResource, gameData);
-                shipBuildWorld.resources.set(SystemIdResource, 'nova:128');
-                await shipBuildWorld.addPlugin(SystemPlugin);
-                shipBuildWorld.entities.set('ship', newInput);
-                shipBuildWorld.step();
-                await shipBuildWorld.resources.get(AsyncSystemResource)?.done;
-                shipBuildWorld.step();
-                shipBuildWorld.entities.delete('ship');
-            }
-            this.input = newInput;
-
-            this.controls.bind();
-        };
-        buttons.shipyard.click.subscribe(showShipyard);
-        this.addButtons(buttons);
 
         // Mission UI: the BBS list, the bar (button added in build() only on
         // planets with a bar), the landing-offer briefing, and the active
@@ -325,8 +335,6 @@ export class Spaceport extends Menu<Entity> {
         if (missions) {
             this.missions = missions;
             this.textEnv = new GameMissionTextEnv(missions.env, gameData);
-
-            buttons.missionBBS.click.subscribe(this.showBBS);
 
             // Menus hold a ui factory: ship name/type are re-resolved per
             // interaction (the player may have changed ships in the shipyard).
@@ -337,8 +345,8 @@ export class Spaceport extends Menu<Entity> {
             this.missionInfo = new MissionInfo(controlEvents, gameData);
 
             this.controls = new MenuControls(controlEvents, {
-                outfitter: showOutfitter,
-                shipyard: showShipyard,
+                outfitter: this.showOutfitter,
+                shipyard: this.showShipyard,
                 tradeCenter: this.showTradeCenter,
                 fleet: this.showFleet,
                 missionBBS: this.showBBS,
@@ -350,8 +358,8 @@ export class Spaceport extends Menu<Entity> {
         }
 
         this.controls = new MenuControls(controlEvents, {
-            outfitter: showOutfitter,
-            shipyard: showShipyard,
+            outfitter: this.showOutfitter,
+            shipyard: this.showShipyard,
             tradeCenter: this.showTradeCenter,
             fleet: this.showFleet,
             depart: this.done.bind(this),
@@ -397,6 +405,32 @@ export class Spaceport extends Menu<Entity> {
             this.container.addChild(this.missionBBS!.container);
             this.container.addChild(this.bar!.container);
             this.container.addChild(this.missionInfo!.container);
+            // Stock buttons keep their stock slots; a planet without the
+            // matching facility simply has no button there.
+            if (data.hasShipyard) {
+                // The shipyard button only exists on planets with a shipyard
+                // (spöb flag 0x00008).
+                const shipyardButton = new Button(this.gameData, "Shipyard", 120,
+                    { x: 160, y: 32 });
+                shipyardButton.click.subscribe(this.showShipyard);
+                this.addButtons({ shipyard: shipyardButton });
+            }
+            if (data.hasOutfitter) {
+                // The outfitter button only exists on planets with an
+                // outfitter (spöb flag 0x00004).
+                const outfitterButton = new Button(this.gameData, "Outfitter", 120,
+                    { x: 160, y: 74 });
+                outfitterButton.click.subscribe(this.showOutfitter);
+                this.addButtons({ outfitter: outfitterButton });
+            }
+            if (data.inhabited) {
+                // The mission BBS button only exists on inhabited planets
+                // (spöb flag 0x00020 clear); offers there are AvailLoc 0.
+                const missionBBSButton = new Button(this.gameData, "Mission BBS", 120,
+                    { x: 160, y: 158 });
+                missionBBSButton.click.subscribe(this.showBBS);
+                this.addButtons({ missionBBS: missionBBSButton });
+            }
             if (data.hasBar) {
                 // The bar button only exists on planets with a bar
                 // (spöb flag 0x00040); offers there are AvailLoc 1.

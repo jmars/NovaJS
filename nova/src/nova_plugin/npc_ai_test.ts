@@ -22,6 +22,7 @@ import { MissionEnvResource } from "../missions/mission_plugin";
 import { makePlayerState, makeTestEnv } from "../missions/test_fixtures";
 import { BoardingProfileComponent, makeDudeShip } from "./dude";
 import { DamagedEvent } from "./death_plugin";
+import { OwnerComponent } from "./fire_weapon_plugin";
 import { AIConfigComponent, AIStateComponent, NpcAIPlugin } from "./npc_ai_plugin";
 import { GovernmentComponent, NpcPlugin, playerIsHostile } from "./npc_plugin";
 import { PlayerStateResource } from "../player/player_state_component";
@@ -332,8 +333,11 @@ describe("düde AIType behaviors", () => {
             .toEqual(planet.uuid);
     });
 
-    it("retaliates against the damager and latches attackedBy", () => {
+    it("retaliates against a criminal player and latches attackedBy", () => {
         const world = makeWorld();
+        const state = makePlayerState();
+        state.legalRecord["nova:130"] = -1; // Polaris, crimeTol 0
+        world.resources.set(PlayerStateResource, state);
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
         const player = addEntity(world, "player",
@@ -355,6 +359,130 @@ describe("düde AIType behaviors", () => {
         expect(npc.components.get(AIStateComponent)!.attackedBy)
             .toEqual(player.uuid);
     });
+
+    it("does not retaliate against a neutral player's stray hit", () => {
+        const world = makeWorld();
+        // Empty legal record: no government considers the player hostile.
+        world.resources.set(PlayerStateResource, makePlayerState());
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        const player = addEntity(world, "player",
+            makePlayerShip([50_000, 0]));
+        world.step();
+
+        world.emit(DamagedEvent, {
+            damage: {
+                shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
+                passThroughShield: 0, knockback: 0,
+            },
+            damager: player.uuid,
+        }, [npc.uuid]);
+        world.step();
+
+        // The hit is ignored (cowards would still flee via FleeSystem),
+        // but the last attacker stays latched.
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+        expect(npc.components.get(AIStateComponent)!.attackedBy)
+            .toEqual(player.uuid);
+    });
+
+    it("does not retaliate against a same-government ship's stray hit",
+        () => {
+            const world = makeWorld();
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            const ally = addEntity(world, "ally",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [100, 0]));
+            world.step();
+
+            world.emit(DamagedEvent, {
+                damage: {
+                    shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
+                    passThroughShield: 0, knockback: 0,
+                },
+                damager: ally.uuid,
+            }, [npc.uuid]);
+            world.step();
+
+            expect(npc.components.get(TargetComponent)!.target)
+                .toBeUndefined();
+        });
+
+    it("retaliates against an enemy-government shooter", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        const enemy = makeShip(SHIP);
+        enemy.components.set(TargetComponent, { target: undefined });
+        // The Federation (nova:128) and Polaris (nova:130) are mutual
+        // enemies in the fixtures.
+        enemy.components.set(GovernmentComponent, { id: "nova:128" });
+        enemy.components.get(MovementStateComponent)!.position =
+            new Position(50_000, 0);
+        addEntity(world, "enemy", enemy);
+        world.step();
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+
+        world.emit(DamagedEvent, {
+            damage: {
+                shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
+                passThroughShield: 0, knockback: 0,
+            },
+            damager: enemy.uuid,
+        }, [npc.uuid]);
+        world.step();
+
+        expect(npc.components.get(TargetComponent)!.target)
+            .toEqual(enemy.uuid);
+    });
+
+    it("retaliates against the ship behind a projectile hit, not the projectile", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        const shooter = makeShip(SHIP);
+        shooter.components.set(TargetComponent, { target: undefined });
+        shooter.components.set(GovernmentComponent, { id: "nova:128" });
+        addEntity(world, "shooter", shooter);
+        // Projectiles carry their shooter as OwnerComponent and pass their
+        // own uuid as the DamagedEvent damager.
+        const projectile = new Entity("projectile");
+        projectile.components.set(OwnerComponent, { owner: shooter.uuid });
+        addEntity(world, "projectile", projectile);
+        world.step();
+
+        world.emit(DamagedEvent, {
+            damage: {
+                shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
+                passThroughShield: 0, knockback: 0,
+            },
+            damager: projectile.uuid,
+        }, [npc.uuid]);
+        world.step();
+
+        expect(npc.components.get(TargetComponent)!.target)
+            .toEqual(shooter.uuid);
+    });
+
+    it("does not retaliate when the shooter is gone before the event lands",
+        () => {
+            const world = makeWorld();
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            world.step();
+
+            world.emit(DamagedEvent, {
+                damage: {
+                    shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
+                    passThroughShield: 0, knockback: 0,
+                },
+                damager: "gone-ship",
+            }, [npc.uuid]);
+            world.step();
+
+            expect(npc.components.get(TargetComponent)!.target)
+                .toBeUndefined();
+        });
 
     it("playerIsHostile gates on govt id, env resolution and player state",
         () => {

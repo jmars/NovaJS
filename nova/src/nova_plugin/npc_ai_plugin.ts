@@ -1,9 +1,9 @@
 // Distinct düde AIType 1-4 behavior (Phase 2 of the ship-interaction
 // layer): traders (1/2) travel between planets, ships with a Coward
 // threshold flee once hurt, warships (3) and interceptors (4) acquire
-// targets inside their Aggress range, and any AI ship retaliates against
-// its last attacker (latched for the brave-trader fight-back and the përs
-// grudge system in phase 3).
+// targets inside their Aggress range, and an AI ship retaliates against
+// its last attacker when the two are actual enemies (gated for the
+// brave-trader fight-back and the përs grudge system in phase 3).
 //
 // The combat building blocks stay in npc_plugin: these systems only set
 // TargetComponent and movement/weapon state, and run after FollowAI /
@@ -23,6 +23,7 @@ import { World } from "nova_ecs/world";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import { govtsAreEnemies } from "../player/legal_status";
 import { DamagedEvent } from "./death_plugin";
+import { OwnerComponent } from "./fire_weapon_plugin";
 import { FollowAI, GovernmentComponent, playerIsHostile, ShootAllWeaponsAI } from "./npc_plugin";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { PlanetComponent } from "./planet_plugin";
@@ -239,20 +240,54 @@ const FleeSystem = new System({
     },
 });
 
-// Damaged ships turn on their attacker. Cowardly ships override this in
-// FleeSystem; everyone else keeps the grudge in `attackedBy` (phase 3
-// reads it for the përs grudge).
+// Damaged ships turn on their attacker — but only an actual enemy: the
+// two governments are mutual enemies (govtsAreEnemies), or the attacker is
+// the player and playerIsHostile. A same-faction/friendly ship hit by
+// stray fire neither hunts its ally nor drops a live target (that
+// retaliate-on-any-hit chain snowballed into system-wide melees); cowardly
+// ships still flee via FleeSystem. Everyone keeps the grudge in
+// `attackedBy` (phase 3 reads it for the përs grudge). Projectiles/beams/
+// blasts pass their own uuid as the damager, so the shooter is resolved
+// through the projectile's OwnerComponent and the target becomes the ship
+// that fired, not its bullet.
 const RetaliateSystem = new System({
     name: 'Retaliate',
     events: [DamagedEvent],
     args: [DamagedEvent, AIConfigComponent, AIStateComponent,
-        TargetComponent] as const,
-    step({ damager }, config, state, target) {
+        TargetComponent, Optional(GovernmentComponent), Entities,
+        GetWorld] as const,
+    step({ damager }, config, state, target, govt, entities, world: World) {
         if (!hasAI(config)) {
             return;
         }
         state.attackedBy = damager;
-        target.target = damager;
+
+        // The shooting ship: the damager itself, or its owner when the
+        // damager is a projectile/beam/blast.
+        const damagerEntity = entities.get(damager);
+        const owner = damagerEntity?.components.get(OwnerComponent);
+        const shooter = owner !== undefined
+            ? entities.get(owner.owner) : damagerEntity;
+        if (!shooter) {
+            return;
+        }
+
+        if (shooter.components.has(PlayerShipSelector)) {
+            if (playerIsHostile(govt?.id, world)) {
+                target.target = shooter.uuid;
+            }
+            return;
+        }
+
+        const env = world.resources.get(MissionEnvResource);
+        const mine = env?.government(govt?.id ?? null) ?? null;
+        const theirs = env?.government(
+            shooter.components.get(GovernmentComponent)?.id ?? null) ?? null;
+        if (mine && theirs
+            && (govtsAreEnemies(mine, theirs)
+                || govtsAreEnemies(theirs, mine))) {
+            target.target = shooter.uuid;
+        }
     },
 });
 

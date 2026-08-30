@@ -128,6 +128,8 @@ export async function PlanetParse(spob: SpobResource, notFoundFunction: (m: stri
         hasBar: (spob.flags & 0x40) !== 0,
         tech: spob.techLevel,
         hasTradeCenter: (spob.flags & 0x00000002) !== 0,
+        hasOutfitter: (spob.flags & 0x00000004) !== 0,
+        hasShipyard: (spob.flags & 0x00000008) !== 0,
         priceBands: planetPriceBands(spob.flags)
     }
 }
