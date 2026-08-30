@@ -100,8 +100,13 @@ const SpawnPersSystem = new AsyncSystem({
             return;
         }
         const systemRawId = rawIdOf(systemId);
-        const weaponOutfits = await weaponOutfitMap(gameData);
 
+        // First collect every eligible përs that wins its 5% roll, then
+        // spawn only a bounded seeded-random subset of them (like the
+        // flët cap in fleet_plugin.ts — hundreds of përs match any given
+        // system, and letting them all warp in drops dozens of ships on
+        // the player at once).
+        const matching: Array<{ pers: PersData; shipType: string }> = [];
         for (const persId of ids.Pers) {
             let pers: PersData;
             try {
@@ -123,15 +128,20 @@ const SpawnPersSystem = new AsyncSystem({
             const rng = makeRng(persSpawnSeed(state, rawIdOf(persId), systemRawId));
             // See the file comment: the roll is tied to warp-in, one draw
             // per përs per system entry.
-            if (rng() >= SPAWN_CHANCE) {
-                continue;
+            if (rng() < SPAWN_CHANCE) {
+                matching.push({ pers, shipType: pers.shipType });
             }
+        }
+
+        const weaponOutfits = await weaponOutfitMap(gameData);
+        for (const { pers, shipType: shipTypeId } of choosePers(matching,
+            makeRng(systemPersSeed(state, systemRawId)))) {
             let shipData: ShipData;
             try {
-                shipData = await gameData.data.Ship.get(pers.shipType);
+                shipData = await gameData.data.Ship.get(shipTypeId);
             }
             catch {
-                console.warn(`[pers] unknown shïp ${pers.shipType} (përs ${persId})`);
+                console.warn(`[pers] unknown shïp ${shipTypeId} (përs ${pers.id})`);
                 continue;
             }
             spawnPers(entities, shipData, pers, state, weaponOutfits);
@@ -272,6 +282,34 @@ async function weaponOutfitMap(gameData: GameDataInterface):
         }
     }
     return map;
+}
+
+// How many përs a single system entry may spawn at most. The 5% roll
+// fires per eligible përs and most përs LinkSyst -1 (any system), so
+// without the cap a busy system warps in dozens at once.
+export const MAX_PERS_PER_SYSTEM = 4;
+
+// The subset pick's seed: per system entry (pilot, system, date), salted
+// with a "PERS" domain tag so the përs subset chosen here is not
+// correlated with the flët subset systemFleetSeed picks for the same
+// entry.
+function systemPersSeed(state: PlayerState, systemRawId: number): number {
+    const { day, month, year } = state.date;
+    const dayCount = year * 365 + month * 40 + day;
+    return (state.rngSeed ^ (systemRawId * 0x85EB)
+        ^ (dayCount * 0xC2B2AE35) ^ 0x50455253) >>> 0;
+}
+
+// Seeded Fisher-Yates over a copy, then the cap. The stream order
+// (ids.Pers is data-order) and seed are both stable, so the pick is
+// deterministic across reloads and peers.
+function choosePers<T>(pers: T[], rng: () => number): T[] {
+    const pool = [...pers];
+    for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [pool[i], pool[j]] = [pool[j]!, pool[i]!];
+    }
+    return pool.slice(0, MAX_PERS_PER_SYSTEM);
 }
 
 // One përs's spawn roll per entry: seeded by pilot, përs, system and game

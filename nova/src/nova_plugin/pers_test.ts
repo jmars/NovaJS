@@ -27,7 +27,7 @@ import { DamagedEvent, DeathEvent } from "./death_plugin";
 import { AIConfigComponent } from "./npc_ai_plugin";
 import { DeathAISystem } from "./npc_plugin";
 import { OutfitsStateComponent } from "./outfit_plugin";
-import { PersComponent, PersPlugin } from "./pers_plugin";
+import { PersComponent, PersPlugin, MAX_PERS_PER_SYSTEM } from "./pers_plugin";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { ShipDataComponent } from "./ship_plugin";
 import { ShieldComponent } from "./health_plugin";
@@ -74,10 +74,10 @@ const DAMAGE = {
 
 // Mirrors persSpawnSeed in pers_plugin.ts so the specs can pick state
 // seeds that deterministically land on either side of the 5% roll.
-function spawnRoll(state: PlayerState): number {
+function spawnRoll(state: PlayerState, persRawId: number = PERS_RAW_ID): number {
     const { day, month, year } = state.date;
     const dayCount = year * 365 + month * 40 + day;
-    const seed = (state.rngSeed ^ (PERS_RAW_ID * 0x9E37)
+    const seed = (state.rngSeed ^ (persRawId * 0x9E37)
         ^ (SYSTEM_RAW_ID * 0x85EB) ^ (dayCount * 0xC2B2AE35)) >>> 0;
     return makeRng(seed)();
 }
@@ -95,6 +95,33 @@ function findSeed(predicate: (roll: number) => boolean): number {
 const SPAWN_SEED = findSeed(roll => roll < 0.05);
 const NO_SPAWN_SEED = findSeed(roll => roll >= 0.05);
 
+// Extra përs the cap spec registers (with PERS_ID: 60 total), all
+// LinkSyst -1 so all of them are eligible and roll.
+const MANY_EXTRA = 59;
+const MANY_FIRST_RAW_ID = 401;
+
+// How many of the mock përs win their 5% roll under this state.
+function winners(state: PlayerState): number {
+    let count = spawnRoll(state) < 0.05 ? 1 : 0;
+    for (let i = 0; i < MANY_EXTRA; i++) {
+        if (spawnRoll(state, MANY_FIRST_RAW_ID + i) < 0.05) {
+            count++;
+        }
+    }
+    return count;
+}
+
+// A state seed where at least 6 of the 60 mock përs win their roll, so
+// the per-system cap is what bounds the spawn.
+const CAP_SEED = (() => {
+    for (let seed = 1; seed < 10_000; seed++) {
+        if (winners(makePlayerState(seed)) >= 6) {
+            return seed;
+        }
+    }
+    throw new Error("no pilot seed found with >=6 winning përs rolls");
+})();
+
 async function flush(): Promise<void> {
     for (let i = 0; i < 5; i++) {
         await new Promise(resolve => setImmediate(resolve));
@@ -102,10 +129,17 @@ async function flush(): Promise<void> {
 }
 
 async function makeTestWorld(systemId: string, state: PlayerState,
-    persOverrides: Partial<PersData> = {}) {
+    persOverrides: Partial<PersData> = {}, extraPers = 0) {
     const gameData = new MockGameData();
     gameData.data.Ship.map.set(SHIP_ID, SHIP);
     gameData.data.Pers.map.set(PERS_ID, { ...PERS, ...persOverrides });
+    for (let i = 0; i < extraPers; i++) {
+        const rawId = MANY_FIRST_RAW_ID + i;
+        gameData.data.Pers.map.set(`nova:${rawId}`, {
+            ...PERS, ...persOverrides, id: `nova:${rawId}`,
+            name: `Përs ${rawId}`,
+        });
+    }
     gameData.data.Outfit.map.set(OUTFIT_ID, {
         ...getDefaultOutfitData(),
         id: OUTFIT_ID,
@@ -223,6 +257,25 @@ describe("përs spawn", () => {
         expect(vulnerability.vulnerableTo.size).toEqual(0);
         expect(invincible.persShip().components.get(ShieldComponent))
             .toBeUndefined();
+    });
+});
+
+describe("përs spawn cap", () => {
+    it("spawns at most MAX_PERS_PER_SYSTEM përs per system entry", async () => {
+        // Sanity: the seed really has >=6 roll winners, so the cap (not
+        // the roll) is what bounds the spawn.
+        expect(winners(makePlayerState(CAP_SEED))).toBeGreaterThanOrEqual(6);
+        const capped = await makeTestWorld(SYSTEM_ID,
+            makePlayerState(CAP_SEED), {}, MANY_EXTRA);
+        expect(capped.persShips().length).toEqual(MAX_PERS_PER_SYSTEM);
+    });
+
+    it("picks the same capped subset on every entry with the same state", async () => {
+        const first = await makeTestWorld(SYSTEM_ID,
+            makePlayerState(CAP_SEED), {}, MANY_EXTRA);
+        const second = await makeTestWorld(SYSTEM_ID,
+            makePlayerState(CAP_SEED), {}, MANY_EXTRA);
+        expect(second.persShips()).toEqual(first.persShips());
     });
 });
 
