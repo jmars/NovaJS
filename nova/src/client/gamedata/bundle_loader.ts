@@ -35,6 +35,74 @@ export interface BundleIndexEntry {
 
 const DEFAULT_BUNDLE_PATH = 'gameData/bundle.bin';
 
+/** "?v=<deploy version>" for bundle fetches, so a redeploy busts stale
+ * cached bundles. The version is embedded by generate_static as
+ * window.NOVA_VERSION (window === globalThis in the browser); empty
+ * outside the generated site (dev server, tests). */
+function versionSuffix(): string {
+    const version = (globalThis as { NOVA_VERSION?: string }).NOVA_VERSION || '';
+    return version !== '' ? '?v=' + version : '';
+}
+
+/** Fetches url as bytes, or null on any failure (404, offline,
+ * non-browser fetch). */
+async function fetchBytes(url: string): Promise<ArrayBuffer | null> {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            return null;
+        }
+        return await response.arrayBuffer();
+    } catch {
+        return null;
+    }
+}
+
+/** Gunzips via the browser's DecompressionStream. Throws when the bytes
+ * are not valid gzip, so the caller can fall back to the plain bundle. */
+async function gunzip(data: ArrayBuffer): Promise<ArrayBuffer> {
+    const source = new Response(data);
+    if (!source.body) {
+        throw new Error('Empty response body');
+    }
+    const output = source.body.pipeThrough(new DecompressionStream('gzip'));
+    return new Response(output).arrayBuffer();
+}
+
+/** Installs the decoded bundle as the module-level index. Throws on a
+ * malformed header. */
+function indexBundle(data: ArrayBuffer): boolean {
+    const decoded = decodeHeader(data);
+    bundleData = data;
+    payloadStart = decoded.payloadStart;
+    bundleIndex = buildBundleIndex(decoded.header, pageBase());
+    return true;
+}
+
+/** Fetches and indexes the bundle. Returns false — network-fallback mode —
+ * when the bundle is missing or malformed, leaving the stock pixi parsers
+ * in charge of every URL.
+ *
+ * Tries the gzipped bundle the generator deploys first (decompressed here
+ * by DecompressionStream), then the plain bundle (older deployments), then
+ * gives up into network-fallback mode. */
+export async function loadGameBundle(bundlePath: string = DEFAULT_BUNDLE_PATH): Promise<boolean> {
+    const suffix = versionSuffix();
+    const gzData = await fetchBytes(bundlePath + '.gz' + suffix);
+    if (gzData !== null) {
+        try {
+            return indexBundle(await gunzip(gzData));
+        } catch {
+            // Corrupt or not gzip: fall through to the plain bundle.
+        }
+    }
+    const plainData = await fetchBytes(bundlePath + suffix);
+    if (plainData !== null) {
+        return indexBundle(plainData);
+    }
+    return false;
+}
+
 let bundleData: ArrayBuffer | null = null;
 let payloadStart = 0;
 let bundleIndex: Map<string, BundleIndexEntry> | null = null;
@@ -85,27 +153,6 @@ function lookupEntry(url: string): BundleIndexEntry | undefined {
         return undefined;
     }
     return bundleIndex.get(canonicalEntryUrl(url, pageBase()));
-}
-
-/** Fetches and indexes the bundle. Returns false — network-fallback mode —
- * when the bundle is missing or malformed, leaving the stock pixi parsers
- * in charge of every URL. */
-export async function loadGameBundle(bundlePath: string = DEFAULT_BUNDLE_PATH): Promise<boolean> {
-    try {
-        const response = await fetch(bundlePath);
-        if (!response.ok) {
-            return false;
-        }
-        const data = await response.arrayBuffer();
-        const decoded = decodeHeader(data);
-        bundleData = data;
-        payloadStart = decoded.payloadStart;
-        bundleIndex = buildBundleIndex(decoded.header, pageBase());
-        return true;
-    } catch {
-        // No bundle (404, offline, non-browser fetch): network-fallback mode.
-        return false;
-    }
 }
 
 async function loadTexture(url: string, bytes: Uint8Array, rawUrl?: string): Promise<PIXI.Texture> {

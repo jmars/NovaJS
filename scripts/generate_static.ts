@@ -1,12 +1,21 @@
 // Static site data generator: pre-renders everything the express server
 // serves on the fly (setupRoutes.ts) into something a static host can serve:
 //   --layout bundle (default):
-//       gameData/bundle.bin  ONE file: header + manifest + the raw bytes of
-//                            every resource concatenated, so the client
+//       gameData/bundle.bin.gz
+//                       ONE gzip'd file: header + manifest + the raw bytes
+//                            of every resource concatenated, so the client
 //                            makes a single HTTP request instead of ~9000
-//                            (the GitHub Pages black-screen cause). See
-//                            nova/src/common/bundle_format.ts for the
+//                            (the GitHub Pages black-screen cause). The
+//                            client decompresses it with
+//                            DecompressionStream('gzip') and falls back to
+//                            an uncompressed gameData/bundle.bin when the
+//                            .gz is missing or corrupt (older deployments).
+//                            See nova/src/common/bundle_format.ts for the
 //                            binary layout.
+//       index.html          the site entry point with the deploy version
+//                           injected (cache-busting query parameter on
+//                           browser_bundle.js + window.NOVA_VERSION for the
+//                           bundle loader).
 //   --layout files:
 //       gameData/data/{type}/{id}.{json|png|mp3}
 //       gameData/ids.json
@@ -29,6 +38,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as zlib from "zlib";
 import {
     BUNDLE_FORMAT,
     BUNDLE_VERSION,
@@ -40,6 +50,7 @@ import {
 import { FilesystemData, Paths, PathInfo } from "nova/src/server/parsing/FilesystemData";
 import { GameDataAggregator } from "nova/src/server/parsing/GameDataAggregator";
 import { NovaParse } from "novaparse/NovaParse";
+import { currentVersion, injectVersion } from "./version";
 
 // The bundle runs from scripts/, so these land inside the repo checkout.
 const defaultDataPath = path.join(__dirname, "..", "nova", "Nova_Data");
@@ -245,29 +256,41 @@ async function main() {
         }
     }
 
+    // The versioned entry point: build:site no longer copies the plain
+    // template, so the generated index.html carries the deploy version
+    // (cache-busting query parameter on browser_bundle.js +
+    // window.NOVA_VERSION for the bundle loader). The loading overlay is
+    // static content in the template.
+    if (layout === "bundle") {
+        var template = fs.readFileSync(
+            path.join(__dirname, "..", "nova", "src", "index.html"), "utf8");
+        fs.writeFileSync(path.join(outDir, "index.html"),
+            injectVersion(template, currentVersion()));
+    }
+
     // Self-verification: exactly one entry per ID plus the 3 auxiliary
     // files, and the bytes are servable — PNGs carry the PNG magic bytes,
     // MP3s carry a frame header (or are the empty default sound), JSON
     // files parse.
     if (layout === "files") {
         verifyFilesLayout(outDir, totalIDs, failures);
+        if (failures.length === 0) {
+            console.log("PASS: " + totalIDs + " resources + 3 auxiliary files");
+        }
     }
     else {
-        verifyBundleLayout(sink as BundleSink, outDir, totalIDs, failures);
+        var bundleInfo = verifyBundleLayout(sink as BundleSink, outDir, totalIDs, failures);
+        if (failures.length === 0) {
+            console.log("PASS: " + totalIDs + " resources + 3 auxiliary entries ("
+                + (sink as BundleSink).entryCount + " entries, "
+                + (fs.statSync(bundleInfo.gzFile).size / (1024 * 1024)).toFixed(1)
+                + " MB " + path.relative(outDir, bundleInfo.gzFile)
+                + ", uncompressed "
+                + (bundleInfo.uncompressedBytes / (1024 * 1024)).toFixed(1) + " MB)");
+        }
     }
 
     if (failures.length === 0) {
-        if (layout === "files") {
-            console.log("PASS: " + totalIDs + " resources + 3 auxiliary files");
-        }
-        else {
-            var bundleSink = sink as BundleSink;
-            var bundleFile = path.join(outDir, "gameData", "bundle.bin");
-            console.log("PASS: " + totalIDs + " resources + 3 auxiliary entries ("
-                + bundleSink.entryCount + " entries, "
-                + (fs.statSync(bundleFile).size / (1024 * 1024)).toFixed(1)
-                + " MB " + path.relative(outDir, bundleFile) + ")");
-        }
         return 0;
     }
     else {
@@ -316,11 +339,10 @@ function verifyFilesLayout(outDir: string, totalIDs: number, failures: Array<str
 }
 
 function verifyBundleLayout(bundleSink: BundleSink, outDir: string, totalIDs: number,
-    failures: Array<string>): void {
+    failures: Array<string>): { gzFile: string, uncompressedBytes: number } {
     var bundleFile = path.join(outDir, "gameData", "bundle.bin");
     fs.mkdirSync(path.dirname(bundleFile), { recursive: true });
-    bundleSink.write(bundleFile);
-    var fileSize = fs.statSync(bundleFile).size;
+    var uncompressedBytes = bundleSink.write(bundleFile);
     var bundle = fs.readFileSync(bundleFile);
 
     var decoded = decodeHeader(bundle);
@@ -341,9 +363,9 @@ function verifyBundleLayout(bundleSink: BundleSink, outDir: string, totalIDs: nu
         expectedOffset = entry.offset + entry.length;
         sum += entry.length;
     }
-    if (decoded.payloadStart + sum !== fileSize) {
+    if (decoded.payloadStart + sum !== uncompressedBytes) {
         failures.push("Byte accounting mismatch: payloadStart " + decoded.payloadStart
-            + " + sum(entry.length) " + sum + " !== file size " + fileSize);
+            + " + sum(entry.length) " + sum + " !== file size " + uncompressedBytes);
     }
 
     for (var entry of decoded.header.entries) {
@@ -352,6 +374,20 @@ function verifyBundleLayout(bundleSink: BundleSink, outDir: string, totalIDs: nu
                 decoded.payloadStart + entry.offset + entry.length),
             failures);
     }
+
+    // Deploy artifact: gzip the whole bundle into bundle.bin.gz. The site
+    // ships only the .gz — the client decompresses it with
+    // DecompressionStream('gzip') and falls back to an uncompressed
+    // gameData/bundle.bin, which no deployment serves (dev uses the
+    // --layout files tree). The plain file above exists only as the
+    // self-check input.
+    var gzFile = bundleFile + ".gz";
+    fs.writeFileSync(gzFile, zlib.gzipSync(bundle));
+    if (Buffer.compare(zlib.gunzipSync(fs.readFileSync(gzFile)), bundle) !== 0) {
+        failures.push("Gzip round-trip mismatch: " + path.relative(outDir, gzFile));
+    }
+    fs.rmSync(bundleFile);
+    return { gzFile: gzFile, uncompressedBytes: uncompressedBytes };
 }
 
 main().then(function(code) {

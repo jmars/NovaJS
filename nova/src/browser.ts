@@ -151,6 +151,27 @@ async function jumpTo({ entity, to, uuid }: { entity: Entity, to: string, uuid: 
     system = newSystem;
 }
 
+// --- Loading screen ---
+
+// index.html shows a full-screen "Loading..." overlay while the game data
+// bundle downloads and the textures decode. Hide it once the game loop is
+// running — but keep it up for a minimum time, so warm (HTTP-cached) boots
+// don't just flash it.
+const LOADING_SCREEN_MIN_MS = 750;
+const loadingScreenShownAt = Date.now();
+
+// Idempotent, and a no-op when the overlay is absent (a template without
+// it): a failed hide must never break the running game.
+function hideLoadingScreen(): void {
+    const wait = Math.max(0, LOADING_SCREEN_MIN_MS - (Date.now() - loadingScreenShownAt));
+    window.setTimeout(() => {
+        const overlay = document.getElementById('loading');
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
+    }, wait);
+}
+
 async function startGame() {
     world = new World();
     world.resources.set(GameDataResource, gameData);
@@ -272,6 +293,10 @@ async function startGame() {
         //activeSystem?.step();
         stats.end();
     });
+
+    // The game loop is up and the first frames render; retire the overlay
+    // (respecting its minimum display time).
+    hideLoadingScreen();
 }
 
 startGame()

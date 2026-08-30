@@ -2,7 +2,7 @@
 // bundles each *_test.ts with esbuild and runs the bundles under jasmine in
 // plain node:
 //   npm run test:headless
-//   node scripts/test_headless.js [rootDir ...]   (default: nova nova_ecs novaparse)
+//   node scripts/test_headless.js [rootDir ...]   (default: nova nova_ecs novaparse scripts)
 //
 // Test files that cannot run headless (browser-only imports, missing game
 // data) are reported as SKIPped, not failures — only jasmine assertion
@@ -66,7 +66,7 @@ var roots = process.argv.slice(2).map(function(arg) {
     return path.resolve(repoRoot, arg);
 });
 if (roots.length === 0) {
-    roots = ["nova", "nova_ecs", "novaparse"].map(function(dir) {
+    roots = ["nova", "nova_ecs", "novaparse", "scripts"].map(function(dir) {
         return path.join(repoRoot, dir);
     });
 }

@@ -1,4 +1,5 @@
 import "jasmine";
+import * as zlib from "zlib";
 import {
     BUNDLE_FORMAT,
     BUNDLE_VERSION,
@@ -89,5 +90,81 @@ describe("bundle_loader", function() {
         expect(await loadGameBundle("http://127.0.0.1:1/gameData/bundle.bin")).toBe(false);
         // Unfetchable scheme (no node HTTP server involved either way).
         expect(await loadGameBundle("file:///nonexistent/novajs/bundle.bin")).toBe(false);
+    });
+
+    /** Replaces global fetch with a stub over a url -> response map. The
+     * map keys are plain paths; any "?v=" cache-bust suffix is stripped
+     * before lookup. */
+    function stubFetch(responses: { [path: string]: Uint8Array | number }): Array<string> {
+        const urls: Array<string> = [];
+        (globalThis as { fetch: unknown }).fetch = async (url: string) => {
+            urls.push(url);
+            const entry = responses[url.split("?")[0]];
+            if (typeof entry === "number") {
+                return new Response("", { status: entry });
+            }
+            return new Response(entry);
+        };
+        return urls;
+    }
+
+    const realFetch = globalThis.fetch;
+
+    afterEach(function() {
+        (globalThis as { fetch: unknown }).fetch = realFetch;
+        delete (globalThis as { NOVA_VERSION?: string }).NOVA_VERSION;
+    });
+
+    it("fetches the gzipped bundle first and decompresses it before decoding", async function() {
+        const file = sampleBundleFile();
+        const gz = zlib.gzipSync(Buffer.from(file));
+        (globalThis as { NOVA_VERSION?: string }).NOVA_VERSION = "deadbeef";
+        const urls = stubFetch({ "gameData/bundle.bin.gz": gz });
+
+        expect(await loadGameBundle("gameData/bundle.bin")).toBe(true);
+        // The version suffix rides along, and the plain file is never
+        // touched when the .gz loads.
+        expect(urls).toEqual(["gameData/bundle.bin.gz?v=deadbeef"]);
+    });
+
+    it("falls back to the plain bundle when the .gz is missing", async function() {
+        const file = sampleBundleFile();
+        const urls = stubFetch({ "gameData/bundle.bin.gz": 404, "gameData/bundle.bin": file });
+
+        expect(await loadGameBundle("gameData/bundle.bin")).toBe(true);
+        expect(urls).toEqual(["gameData/bundle.bin.gz", "gameData/bundle.bin"]);
+    });
+
+    it("falls back to the plain bundle when the .gz is not gzip", async function() {
+        const file = sampleBundleFile();
+        stubFetch({
+            "gameData/bundle.bin.gz": new TextEncoder().encode("not gzip"),
+            "gameData/bundle.bin": file,
+        });
+
+        expect(await loadGameBundle("gameData/bundle.bin")).toBe(true);
+    });
+
+    it("resolves false when neither the .gz nor the plain bundle exists", async function() {
+        stubFetch({ "gameData/bundle.bin.gz": 404, "gameData/bundle.bin": 404 });
+
+        expect(await loadGameBundle("gameData/bundle.bin")).toBe(false);
+    });
+
+    it("round-trips node's gzip output through DecompressionStream", async function() {
+        // The exact production pair: zlib.gzipSync (the generator) ->
+        // gunzip via DecompressionStream (the loader).
+        const payload = new Uint8Array(1 << 16);
+        for (let i = 0; i < payload.length; i++) {
+            payload[i] = (i * 31 + 7) % 251;
+        }
+        const gz = zlib.gzipSync(payload);
+        const source = new Response(new Uint8Array(gz));
+        if (!source.body) {
+            throw new Error("Empty response body");
+        }
+        const output = new Response(source.body.pipeThrough(new DecompressionStream("gzip")));
+        expect(Array.from(new Uint8Array(await output.arrayBuffer())))
+            .toEqual(Array.from(payload));
     });
 });
