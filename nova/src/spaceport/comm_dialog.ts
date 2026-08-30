@@ -83,10 +83,12 @@ export class CommDialog extends Menu<boolean> {
     // Accept Mission.
     async showComm(input: CommInput): Promise<boolean> {
         await this.buildPromise;
-        this.setButtons(input);
+        // Buttons and pict load their textures lazily; wait for them so the
+        // dialog never shows half-drawn.
+        await this.setButtons(input);
         this.text.text = input.quote === ""
             ? input.name : `${input.name}: ${input.quote}`;
-        this.setPict(input.pict);
+        await this.setPict(input.pict);
 
         this.container.visible = true;
         this.controls.bind();
@@ -105,7 +107,7 @@ export class CommDialog extends Menu<boolean> {
     }
 
     // The Accept button exists only while something is offered.
-    private setButtons(input: CommInput) {
+    private async setButtons(input: CommInput) {
         if (this.acceptButton) {
             this.container.removeChild(this.acceptButton.container);
             this.acceptButton = undefined;
@@ -129,14 +131,17 @@ export class CommDialog extends Menu<boolean> {
             ...(this.acceptButton ? { accept: this.acceptButton } : {}),
             done: this.doneButton,
         });
+        await Promise.all([this.acceptButton?.buildPromise,
+            this.doneButton.buildPromise]);
     }
 
-    private setPict(graphic: number) {
+    private async setPict(graphic: number) {
         this.pictContainer.children.length = 0;
         if (graphic < 128) {
             return;
         }
-        this.pictContainer.addChild(this.gameData.spriteFromPict(`nova:${graphic}`));
+        this.pictContainer.addChild(
+            await this.gameData.spriteFromPictAsync(`nova:${graphic}`));
     }
 }
 

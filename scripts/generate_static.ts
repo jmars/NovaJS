@@ -1,17 +1,24 @@
 // Static site data generator: pre-renders everything the express server
 // serves on the fly (setupRoutes.ts) into something a static host can serve:
 //   --layout bundle (default):
-//       gameData/bundle.bin.gz
-//                       ONE gzip'd file: header + manifest + the raw bytes
-//                            of every resource concatenated, so the client
-//                            makes a single HTTP request instead of ~9000
-//                            (the GitHub Pages black-screen cause). The
-//                            client decompresses it with
-//                            DecompressionStream('gzip') and falls back to
-//                            an uncompressed gameData/bundle.bin when the
-//                            .gz is missing or corrupt (older deployments).
-//                            See nova/src/common/bundle_format.ts for the
-//                            binary layout.
+//       gameData/bundle.index.json
+//                       ONE small JSON index: format tag, version, entry
+//                            count, the shard file names, and one manifest
+//                            entry per resource. The client fetches only
+//                            this up front and then HTTP-Range fetches each
+//                            resource's bytes out of the shards on demand —
+//                            instead of one huge whole-bundle download (or
+//                            ~9000 individual requests, the GitHub Pages
+//                            black-screen cause).
+//       gameData/bundle.<i>.bin
+//                       uncompressed payload shards (see SHARD_BYTES): the
+//                            raw bytes of every resource, concatenated in
+//                            manifest order; entries never straddle shards
+//                            and each shard stays under the GitHub Pages
+//                            ~100MiB per-file soft limit. Uncompressed
+//                            because a gzip stream cannot be Range-seeked
+//                            (and PNGs/MP3s are incompressible anyway).
+//                            See nova/src/common/bundle_format.ts.
 //       index.html          the site entry point with the deploy version
 //                           injected (cache-busting query parameter on
 //                           browser_bundle.js + window.NOVA_VERSION for the
@@ -38,14 +45,13 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as zlib from "zlib";
 import {
     BUNDLE_FORMAT,
     BUNDLE_VERSION,
     BundleEntry,
-    BundleHeader,
-    decodeHeader,
-    encodeHeader,
+    BundleIndexHeader,
+    SHARD_BYTES,
+    validateHeader,
 } from "nova/src/common/bundle_format";
 import { FilesystemData, Paths, PathInfo } from "nova/src/server/parsing/FilesystemData";
 import { GameDataAggregator } from "nova/src/server/parsing/GameDataAggregator";
@@ -107,13 +113,15 @@ class FileSink implements ResourceSink {
     }
 }
 
-// --layout bundle: appends resource bytes and records manifest entries,
-// then writes one bundle.bin = header (u32LE headerLength + header JSON,
-// see bundle_format.ts) + payload.
+// --layout bundle: appends resource bytes into shards and records manifest
+// entries, then writes gameData/bundle.index.json (see bundle_format.ts)
+// plus one pure-payload gameData/bundle.<i>.bin per shard.
 class BundleSink implements ResourceSink {
-    private chunks: Array<Buffer | Uint8Array> = [];
+    // One chunk list per shard; chunks[0] starts empty (never rotated).
+    private chunks: Array<Array<Buffer | Uint8Array>> = [[]];
     private entries: Array<BundleEntry> = [];
     private seen = new Set<string>();
+    // Write cursor within the current shard.
     private offset = 0;
 
     add(url: string, data: Buffer | Uint8Array | string): void {
@@ -122,8 +130,21 @@ class BundleSink implements ResourceSink {
         }
         this.seen.add(url);
         var bytes = typeof data === "string" ? Buffer.from(data, "utf8") : data;
-        this.entries.push({ url: url, offset: this.offset, length: bytes.byteLength });
-        this.chunks.push(bytes);
+        // Shards must stay under the static host's per-file limit, and an
+        // entry never straddles shards. Rotate only when the current shard
+        // is non-empty: an entry bigger than SHARD_BYTES then lands in a
+        // shard of its own, which the self-check fails below.
+        if (this.offset > 0 && this.offset + bytes.byteLength > SHARD_BYTES) {
+            this.chunks.push([]);
+            this.offset = 0;
+        }
+        this.entries.push({
+            url: url,
+            shard: this.chunks.length - 1,
+            offset: this.offset,
+            length: bytes.byteLength,
+        });
+        this.chunks[this.chunks.length - 1].push(bytes);
         this.offset += bytes.byteLength;
     }
 
@@ -131,26 +152,35 @@ class BundleSink implements ResourceSink {
         return this.entries.length;
     }
 
-    // Writes the bundle file and returns its total size in bytes.
-    write(outFile: string): number {
-        var header: BundleHeader = {
+    // Writes the index + shard files and returns the index JSON.
+    write(outDir: string): string {
+        var gameDataDir = path.join(outDir, "gameData");
+        fs.mkdirSync(gameDataDir, { recursive: true });
+        // Client-relative names, fetchable straight from the page base.
+        var shards = this.chunks.map((_, i) => "gameData/bundle." + i + ".bin");
+        for (var i = 0; i < this.chunks.length; i += 1) {
+            var fd = fs.openSync(path.join(gameDataDir, path.basename(shards[i])), "w");
+            try {
+                for (var chunk of this.chunks[i]) {
+                    fs.writeSync(fd, chunk);
+                }
+            }
+            finally {
+                fs.closeSync(fd);
+            }
+        }
+
+        var header: BundleIndexHeader = {
             format: BUNDLE_FORMAT,
             version: BUNDLE_VERSION,
             entryCount: this.entries.length,
+            shards: shards,
             entries: this.entries,
         };
-        var prefix = Buffer.from(encodeHeader(header));
-        var fd = fs.openSync(outFile, "w");
-        try {
-            fs.writeSync(fd, prefix);
-            for (var chunk of this.chunks) {
-                fs.writeSync(fd, chunk);
-            }
-        }
-        finally {
-            fs.closeSync(fd);
-        }
-        return prefix.byteLength + this.offset;
+        validateHeader(header);
+        var indexJson = JSON.stringify(header);
+        fs.writeFileSync(path.join(gameDataDir, "bundle.index.json"), indexJson);
+        return indexJson;
     }
 }
 
@@ -281,12 +311,15 @@ async function main() {
     else {
         var bundleInfo = verifyBundleLayout(sink as BundleSink, outDir, totalIDs, failures);
         if (failures.length === 0) {
+            var shardStats = bundleInfo.shardFiles.map(function(file) {
+                return (fs.statSync(file).size / (1024 * 1024)).toFixed(1) + " MB "
+                    + path.relative(outDir, file);
+            });
             console.log("PASS: " + totalIDs + " resources + 3 auxiliary entries ("
-                + (sink as BundleSink).entryCount + " entries, "
-                + (fs.statSync(bundleInfo.gzFile).size / (1024 * 1024)).toFixed(1)
-                + " MB " + path.relative(outDir, bundleInfo.gzFile)
-                + ", uncompressed "
-                + (bundleInfo.uncompressedBytes / (1024 * 1024)).toFixed(1) + " MB)");
+                + (sink as BundleSink).entryCount + " entries in "
+                + bundleInfo.shardFiles.length + " shards ["
+                + shardStats.join(", ") + "], index "
+                + (fs.statSync(bundleInfo.indexFile).size / 1024).toFixed(0) + " KB)");
         }
     }
 
@@ -339,55 +372,78 @@ function verifyFilesLayout(outDir: string, totalIDs: number, failures: Array<str
 }
 
 function verifyBundleLayout(bundleSink: BundleSink, outDir: string, totalIDs: number,
-    failures: Array<string>): { gzFile: string, uncompressedBytes: number } {
-    var bundleFile = path.join(outDir, "gameData", "bundle.bin");
-    fs.mkdirSync(path.dirname(bundleFile), { recursive: true });
-    var uncompressedBytes = bundleSink.write(bundleFile);
-    var bundle = fs.readFileSync(bundleFile);
+    failures: Array<string>): { indexFile: string, shardFiles: Array<string> } {
+    var gameDataDir = path.join(outDir, "gameData");
+    bundleSink.write(outDir);
 
-    var decoded = decodeHeader(bundle);
-    if (decoded.header.entries.length !== totalIDs + 3
-        || decoded.header.entryCount !== totalIDs + 3) {
-        failures.push("Expected " + (totalIDs + 3) + " entries, found "
-            + decoded.header.entries.length);
+    // Re-read the index from disk and validate it exactly like the client.
+    var indexFile = path.join(gameDataDir, "bundle.index.json");
+    var header = JSON.parse(fs.readFileSync(indexFile, "utf8")) as BundleIndexHeader;
+    try {
+        validateHeader(header);
+    }
+    catch (e) {
+        failures.push("Invalid bundle index: " + e);
+        return { indexFile: indexFile, shardFiles: [] };
     }
 
-    // Byte accounting: header prefix + payload === file size, and the
-    // manifest is packed back to back starting at the payload start.
-    var sum = 0;
+    if (header.entries.length !== totalIDs + 3
+        || header.entryCount !== totalIDs + 3) {
+        failures.push("Expected " + (totalIDs + 3) + " entries, found "
+            + header.entries.length);
+    }
+
+    // Byte accounting per shard: the manifest is packed back to back from
+    // offset 0 of each shard, and sum(length) === shard file size. Entries
+    // were appended in order, so a shard change resets the cursor.
     var expectedOffset = 0;
-    for (var entry of decoded.header.entries) {
+    var currentShard = -1;
+    var shardUsed = new Map<number, number>();
+    for (var entry of header.entries) {
+        if (entry.shard !== currentShard) {
+            currentShard = entry.shard;
+            expectedOffset = 0;
+        }
         if (entry.offset !== expectedOffset) {
             failures.push("Non-contiguous manifest entry: " + entry.url);
         }
         expectedOffset = entry.offset + entry.length;
-        sum += entry.length;
-    }
-    if (decoded.payloadStart + sum !== uncompressedBytes) {
-        failures.push("Byte accounting mismatch: payloadStart " + decoded.payloadStart
-            + " + sum(entry.length) " + sum + " !== file size " + uncompressedBytes);
+        shardUsed.set(currentShard, expectedOffset);
     }
 
-    for (var entry of decoded.header.entries) {
-        verifyContentBytes(entry.url,
-            bundle.subarray(decoded.payloadStart + entry.offset,
-                decoded.payloadStart + entry.offset + entry.length),
-            failures);
+    var shardFiles: Array<string> = [];
+    for (var i = 0; i < header.shards.length; i += 1) {
+        var shardFile = path.join(outDir, header.shards[i]);
+        shardFiles.push(shardFile);
+        var size = fs.statSync(shardFile).size;
+        if ((shardUsed.get(i) ?? 0) !== size) {
+            failures.push("Byte accounting mismatch for " + header.shards[i]
+                + ": sum(entry.length) " + (shardUsed.get(i) ?? 0)
+                + " !== file size " + size);
+        }
+        // GitHub Pages soft-limits files at ~100MiB; SHARD_BYTES leaves
+        // headroom, so crossing 100MB means the rotation logic broke.
+        if (size >= 100 * 1024 * 1024) {
+            failures.push("Shard " + header.shards[i] + " is " + size
+                + " bytes, at or above the 100MB static-host limit");
+        }
     }
 
-    // Deploy artifact: gzip the whole bundle into bundle.bin.gz. The site
-    // ships only the .gz — the client decompresses it with
-    // DecompressionStream('gzip') and falls back to an uncompressed
-    // gameData/bundle.bin, which no deployment serves (dev uses the
-    // --layout files tree). The plain file above exists only as the
-    // self-check input.
-    var gzFile = bundleFile + ".gz";
-    fs.writeFileSync(gzFile, zlib.gzipSync(bundle));
-    if (Buffer.compare(zlib.gunzipSync(fs.readFileSync(gzFile)), bundle) !== 0) {
-        failures.push("Gzip round-trip mismatch: " + path.relative(outDir, gzFile));
+    // The bytes are servable: PNGs carry the PNG magic bytes, MP3s carry a
+    // frame header (or are the empty default sound), JSON files parse.
+    for (var i = 0; i < header.shards.length; i += 1) {
+        var shard = fs.readFileSync(shardFiles[i]);
+        for (var entry of header.entries) {
+            if (entry.shard !== i) {
+                continue;
+            }
+            verifyContentBytes(entry.url,
+                shard.subarray(entry.offset, entry.offset + entry.length),
+                failures);
+        }
     }
-    fs.rmSync(bundleFile);
-    return { gzFile: gzFile, uncompressedBytes: uncompressedBytes };
+
+    return { indexFile: indexFile, shardFiles: shardFiles };
 }
 
 main().then(function(code) {

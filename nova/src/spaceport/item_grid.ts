@@ -35,6 +35,7 @@ export class ItemTile<I extends Item> {
     readonly container = new PIXI.Container();
     private wrappedActive = false;
     public built = false;
+    private buildPromise?: Promise<void>;
     public largePict = new PIXI.Container();
 
     constructor(private gameData: GameData, readonly item: I) {
@@ -56,14 +57,21 @@ export class ItemTile<I extends Item> {
         this.container.addChild(this.quantityText);
     }
 
+    // Idempotent, fire-and-forget: the grid stays synchronous (keyboard and
+    // pointer handlers call it), the tile's pict pops in when it arrives.
     build() {
         if (this.built) {
             return;
         }
+        this.buildPromise ??= this.buildAsync();
+    }
 
+    private async buildAsync() {
         if (this.item.pict) {
-            const smallPict = this.gameData.spriteFromPict(this.item.pict);
-            const largePict = this.gameData.spriteFromPict(this.item.pict);
+            const [smallPict, largePict] = await Promise.all([
+                this.gameData.spriteFromPictAsync(this.item.pict),
+                this.gameData.spriteFromPictAsync(this.item.pict),
+            ]);
             this.largePict.addChild(largePict);
             smallPict.anchor.x = 0.5;
             smallPict.position.x = TILE_SIZE[0] / 2;

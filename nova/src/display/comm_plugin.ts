@@ -129,19 +129,20 @@ const BoardCommSystem = new System({
 export const CommPlugin: Plugin = {
     name: 'CommPlugin',
     build(world) {
-        // The client game data adds spriteFromPict to the interface; the
-        // structural guard below keeps headless worlds (plain interfaces)
-        // out of the UI setup.
+        // The client game data adds spriteFromPictAsync to the interface;
+        // the structural guard below keeps headless worlds (plain
+        // interfaces) out of the UI setup.
         const gameData = world.resources.get(GameDataResource) as
             GameData | undefined;
         const controls = world.resources.get(ControlsSubject);
         const stage = world.resources.get(Stage);
         const commOpen = world.resources.get(CommOpenResource);
-        // Browser worlds only: the client game data (spriteFromPict), the
-        // control-event stream, the stage and the interaction plugin's guard
-        // resource must all exist; headless worlds skip the UI entirely.
+        // Browser worlds only: the client game data (spriteFromPictAsync),
+        // the control-event stream, the stage and the interaction plugin's
+        // guard resource must all exist; headless worlds skip the UI
+        // entirely.
         if (!gameData || !controls || !stage || !commOpen
-            || typeof gameData.spriteFromPict !== "function") {
+            || typeof gameData.spriteFromPictAsync !== "function") {
             return;
         }
 

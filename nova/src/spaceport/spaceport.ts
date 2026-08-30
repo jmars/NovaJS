@@ -372,7 +372,7 @@ export class Spaceport extends Menu<Entity> {
         desc.position.y = 70;
         this.container.addChild(desc);
 
-        const spaceportPict = this.gameData.spriteFromPict(data.landingPict)
+        const spaceportPict = await this.gameData.spriteFromPictAsync(data.landingPict)
         spaceportPict.position.x = -306;
         spaceportPict.position.y = -256;
         this.container.addChild(spaceportPict)

@@ -80,3 +80,6 @@ node_modules
 *_bundle.js.map
 # static Pages build output
 dist-site/
+
+# jasmine test bundle artifacts
+.test-bundles/

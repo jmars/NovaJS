@@ -21,18 +21,19 @@ export abstract class Menu<T> {
         private background: string,
         controlEvents: Observable<ControlEvent>) {
         this.controls = new MenuControls(controlEvents);
-
-        const backgroundSprite = this.gameData.spriteFromPict(this.background);
-        // So you can't press things behind this menu:
-        backgroundSprite.interactive = true;
-        backgroundSprite.anchor.x = 0.5;
-        backgroundSprite.anchor.y = 0.5;
         this.container.visible = false;
-        this.container.addChild(backgroundSprite);
         this.buildPromise = this.doBuild();
     }
 
     private async doBuild() {
+        // The background texture loads lazily (Range fetch), so the whole
+        // build is async; it still lands behind everything build() adds.
+        const backgroundSprite = await this.gameData.spriteFromPictAsync(this.background);
+        // So you can't press things behind this menu:
+        backgroundSprite.interactive = true;
+        backgroundSprite.anchor.x = 0.5;
+        backgroundSprite.anchor.y = 0.5;
+        this.container.addChildAt(backgroundSprite, 0);
         await this.build();
         this.built = true;
     }
@@ -50,6 +51,9 @@ export abstract class Menu<T> {
     }
 
     async show(input: T): Promise<T> {
+        // Menus may be shown before their async build finished; wait it out
+        // so the background and buttons are in place before first paint.
+        await this.buildPromise;
         this.container.visible = true;
         this.controls.bind();
         this.setInput(input);

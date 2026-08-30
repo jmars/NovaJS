@@ -59,9 +59,9 @@ export class GameData implements GameDataInterface {
     public readonly ids: Promise<NovaIDs>;
     readonly preloadData: Promise<PreloadData>;
     public loaded = Promise.resolve();
-    /** Resolves once the bundle's textures are in the Assets cache (no-op in
-     * network-fallback mode). Browser boot awaits this so synchronous
-     * Texture.from/Sprite.from calls never fall through to the network. */
+    /** Resolves once the bundle index is loaded (no-op in network-fallback
+     * mode). Browser boot awaits this so game-data lookups are served by
+     * the lazy Range loader instead of per-URL network fetches. */
     public readonly texturesReady = texturesReady;
     private loadQueue = new PQueue({
         autoStart: true,
@@ -174,14 +174,6 @@ export class GameData implements GameDataInterface {
 
     private url(id: string): string {
         return urlJoin(dataPath, NovaDataType.PictImage, id + ".png");
-    }
-
-    textureFromPict(id: string): PIXI.Texture {
-        return PIXI.Texture.from(this.url(id));
-    }
-
-    spriteFromPict(id: string) {
-        return PIXI.Sprite.from(this.url(id));
     }
 
     async textureFromPictAsync(id: string, priority?: number) {

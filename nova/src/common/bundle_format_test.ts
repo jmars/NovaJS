@@ -2,106 +2,95 @@ import "jasmine";
 import {
     BUNDLE_FORMAT,
     BUNDLE_VERSION,
-    BundleHeader,
+    BundleIndexHeader,
     canonicalUrl,
-    decodeHeader,
-    encodeHeader,
+    validateHeader,
 } from "./bundle_format";
 
 describe("bundle_format", function() {
-    function sampleHeader(): BundleHeader {
+    function sampleHeader(): BundleIndexHeader {
         return {
             format: BUNDLE_FORMAT,
             version: BUNDLE_VERSION,
-            entryCount: 3,
+            entryCount: 4,
+            shards: ["gameData/bundle.0.bin", "gameData/bundle.1.bin"],
             entries: [
-                { url: "gameData/data/Ship/nova:128.json", offset: 0, length: 5 },
-                { url: "gameData/data/PictImage/nova:5000.png", offset: 5, length: 8 },
-                { url: "gameData/ids.json", offset: 13, length: 4 },
+                // Shard 0: two entries packed back to back from offset 0.
+                { url: "gameData/data/Ship/nova:128.json", shard: 0, offset: 0, length: 5 },
+                { url: "gameData/data/PictImage/nova:5000.png", shard: 0, offset: 5, length: 8 },
+                // Shard 1: offsets restart at zero (shard-relative).
+                { url: "gameData/ids.json", shard: 1, offset: 0, length: 4 },
+                { url: "gameData/preloadData.json", shard: 1, offset: 4, length: 3 },
             ],
         };
     }
 
-    function samplePayload(): Uint8Array {
-        // 17 bytes of distinct filler, covering all three sample entries.
-        const payload = new Uint8Array(17);
-        for (let i = 0; i < payload.length; i++) {
-            payload[i] = (i * 31 + 7) % 251;
-        }
-        return payload;
+    function roundTrip(header: BundleIndexHeader): BundleIndexHeader {
+        // The index travels as JSON on the wire; validate what arrives.
+        const decoded = JSON.parse(JSON.stringify(header)) as BundleIndexHeader;
+        validateHeader(decoded);
+        return decoded;
     }
 
-    it("round-trips a header and slices entries back out of the payload", function() {
-        const header = sampleHeader();
-        const payload = samplePayload();
-
-        const prefix = encodeHeader(header);
-        const bundle = new Uint8Array(prefix.length + payload.length);
-        bundle.set(prefix, 0);
-        bundle.set(payload, prefix.length);
-
-        const decoded = decodeHeader(bundle);
-        expect(decoded.payloadStart).toEqual(prefix.length);
-        expect(decoded.header).toEqual(header);
-
-        for (const entry of decoded.header.entries) {
-            const start = decoded.payloadStart + entry.offset;
-            expect(Array.from(bundle.subarray(start, start + entry.length)))
-                .toEqual(Array.from(payload.subarray(entry.offset, entry.offset + entry.length)));
-        }
+    it("validates a well-formed index header and keeps shard-relative offsets", function() {
+        const header = roundTrip(sampleHeader());
+        expect(header.entryCount).toEqual(4);
+        // Shard 0 holds the first two entries contiguously...
+        expect(header.entries[1].offset).toEqual(header.entries[0].offset
+            + header.entries[0].length);
+        // ...and shard 1's offsets are relative to the shard, not global.
+        expect(header.entries[2].shard).toEqual(1);
+        expect(header.entries[2].offset).toEqual(0);
+        expect(header.entries[3].offset)
+            .toEqual(header.entries[2].offset + header.entries[2].length);
     });
 
-    it("decodes from an ArrayBuffer", function() {
-        const prefix = encodeHeader(sampleHeader());
-        const bundle = new Uint8Array(prefix.length + 3);
-        bundle.set(prefix, 0);
-
-        const decoded = decodeHeader(bundle.buffer);
-        expect(decoded.header.entryCount).toEqual(3);
-        expect(decoded.payloadStart).toEqual(prefix.length);
-    });
-
-    it("rejects a truncated prefix", function() {
-        const prefix = encodeHeader(sampleHeader());
-        expect(function() { decodeHeader(prefix.subarray(0, 3)); }).toThrowError(/too short/);
-    });
-
-    it("rejects a header length that overruns the file", function() {
-        const prefix = encodeHeader(sampleHeader());
-        new DataView(prefix.buffer).setUint32(0, prefix.length * 2, true);
-        expect(function() { decodeHeader(prefix); }).toThrowError(/exceeds file size/);
+    it("round-trips every field through JSON", function() {
+        const header = roundTrip(sampleHeader());
+        expect(header).toEqual(sampleHeader());
     });
 
     it("rejects a wrong format", function() {
         const bad = sampleHeader() as { format: string };
         bad.format = "not-a-bundle";
-        expect(function() {
-            decodeHeader(encodeHeader(bad as unknown as BundleHeader));
-        }).toThrowError(/Not a/);
+        expect(function() { validateHeader(bad as unknown as BundleIndexHeader); })
+            .toThrowError(/Not a/);
     });
 
     it("rejects an unsupported version", function() {
         const bad = sampleHeader();
         bad.version = BUNDLE_VERSION + 1;
-        expect(function() { decodeHeader(encodeHeader(bad)); }).toThrowError(/version/);
+        expect(function() { validateHeader(bad); }).toThrowError(/version/);
     });
 
     it("rejects a manifest inconsistent with entryCount", function() {
         const bad = sampleHeader();
         bad.entryCount = 99;
-        expect(function() { decodeHeader(encodeHeader(bad)); }).toThrowError(/entryCount/);
+        expect(function() { validateHeader(bad); }).toThrowError(/entryCount/);
+    });
+
+    it("rejects a header with no shards", function() {
+        const bad = sampleHeader();
+        bad.shards = [];
+        expect(function() { validateHeader(bad); }).toThrowError(/no shards/);
+    });
+
+    it("rejects an entry referencing a nonexistent shard", function() {
+        const bad = sampleHeader();
+        bad.entries[3].shard = 2;
+        expect(function() { validateHeader(bad); }).toThrowError(/shard/);
     });
 
     it("canonicalizes urls against a base", function() {
         const base = "https://example.com/site/";
         expect(canonicalUrl("gameData/ids.json", base))
             .toEqual("https://example.com/site/gameData/ids.json");
-        expect(canonicalUrl("/gameData/bundle.bin", base))
-            .toEqual("https://example.com/gameData/bundle.bin");
+        expect(canonicalUrl("/gameData/bundle.0.bin", base))
+            .toEqual("https://example.com/gameData/bundle.0.bin");
         expect(canonicalUrl("https://other.example/x.png", base))
             .toEqual("https://other.example/x.png");
-        expect(canonicalUrl("../gameData/bundle.bin", "https://example.com/site/index.html"))
-            .toEqual("https://example.com/gameData/bundle.bin");
+        expect(canonicalUrl("../gameData/bundle.0.bin", "https://example.com/site/index.html"))
+            .toEqual("https://example.com/gameData/bundle.0.bin");
         // Colons in nova resource IDs are path characters, not a scheme,
         // because the reference contains a slash before any colon.
         expect(canonicalUrl("gameData/data/Ship/nova:128.json", base))

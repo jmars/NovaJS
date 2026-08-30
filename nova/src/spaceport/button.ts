@@ -27,6 +27,9 @@ export class Button {
     private states = new Map<string, PIXI.Container>();
     readonly click = new Subject<undefined>();
     private text: PIXI.Text;
+    // The 9 shared nova:750x picts load lazily (Range fetch); all buttons
+    // share them, so after the first button resolves the rest are instant.
+    readonly buildPromise: Promise<void>;
     private wrappedState = 'normal';
     private width: number;
 
@@ -77,28 +80,37 @@ export class Button {
             this.click.next(undefined);
         });
 
+        this.container.addChild(this.text);
+        this.buildPromise = this.build();
+    }
+
+    // Adds the state sprites once their picts arrive. The text stays the
+    // last child of the outer container (added in the constructor), and the
+    // state containers already exist, so visibility flipping works before
+    // this resolves — the sprites just pop in.
+    private async build() {
         for (const [name, { left, middle, right }] of this.buttonIds) {
             const stateContainer = this.states.get(name);
             if (!stateContainer) {
                 throw new Error('Button missing state container');
             }
-            const leftSprite = this.gameData.spriteFromPict(left);
+            const [leftSprite, middleTexture, rightSprite] = await Promise.all([
+                this.gameData.spriteFromPictAsync(left),
+                this.gameData.textureFromPictAsync(middle),
+                this.gameData.spriteFromPictAsync(right),
+            ]);
+
             leftSprite.anchor.x = 1;
             leftSprite.position.x = LEFT_POS;
             stateContainer.addChild(leftSprite);
 
-            const middleSprite = new PIXI.TilingSprite(
-                this.gameData.textureFromPict(middle), this.width, 25);
+            const middleSprite = new PIXI.TilingSprite(middleTexture, this.width, 25);
             middleSprite.position.x = LEFT_POS;
             stateContainer.addChild(middleSprite);
 
-            const rightSprite = this.gameData.spriteFromPict(right);
             rightSprite.position.x = LEFT_POS + this.width;
             stateContainer.addChild(rightSprite);
-
-            this.states.set(name, stateContainer);
         }
-        this.container.addChild(this.text);
     }
 
     set state(state: string) {

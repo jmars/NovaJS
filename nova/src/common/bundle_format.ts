@@ -1,76 +1,61 @@
-// Custom game-data bundle container: ONE file the client fetches instead of
-// ~9000 individual HTTP requests (the GitHub Pages black-screen cause).
+// Game-data bundle container: a small JSON index plus uncompressed shard
+// files, so the client makes ONE small request up front (the index) and then
+// HTTP-Range fetches each resource's bytes on demand — instead of one huge
+// whole-bundle download (or ~9000 individual requests, the GitHub Pages
+// black-screen cause).
 //
-// File layout (all integers little-endian):
-//   [0, 4)                   u32 headerLength
-//   [4, 4 + headerLength)    UTF-8 JSON header (BundleHeader)
-//   [4 + headerLength, end)  payload: every resource's raw bytes,
-//                            concatenated in manifest order. Entry offsets
-//                            are relative to the payload start, so a
-//                            resource lives at
-//                            payloadStart + offset .. + length.
+// Layout:
+//   gameData/bundle.index.json  UTF-8 JSON BundleIndexHeader: format tag,
+//                               version, entryCount, the shard file names,
+//                               and one manifest entry per resource.
+//   gameData/bundle.<i>.bin     pure payload: every resource's raw bytes,
+//                               concatenated in manifest order. Entries
+//                               never straddle shards; an entry's offset is
+//                               relative to ITS shard's start, so a resource
+//                               lives at shard[offset, offset + length).
 //
-// Entries are not compressed: PNGs and MP3s (~86% of the bytes) are
-// incompressible, and the JSONs are small enough that the simple format
-// wins. The client keeps one ArrayBuffer and decodes on demand.
+// Shards are capped at SHARD_BYTES to stay under the GitHub Pages ~100MiB
+// per-file soft limit (which is also why the payload is uncompressed: a
+// gzip stream cannot be Range-seeked, and PNGs/MP3s — ~86% of the bytes —
+// are incompressible anyway).
 //
-// Pure helpers only — no node or browser globals beyond TextEncoder /
-// TextDecoder / URL — so the same module serves the generator
-// (scripts/generate_static.ts) and the browser loader, and round-trips in
-// headless jasmine tests.
+// Pure helpers only — no node or browser globals beyond URL — so the same
+// module serves the generator (scripts/generate_static.ts) and the browser
+// loader, and round-trips in headless jasmine tests.
 
 export const BUNDLE_FORMAT = "novajs-gamedata-bundle";
-export const BUNDLE_VERSION = 1;
+export const BUNDLE_VERSION = 2;
+
+/** Maximum shard payload size: GitHub Pages soft-limits files at ~100MiB,
+ * and the generator fails the build on any shard at or above 100MB. */
+export const SHARD_BYTES = 64 * 1024 * 1024;
 
 export interface BundleEntry {
     /** Client-relative resource key, e.g. "gameData/data/Ship/nova:128.json". */
     url: string;
-    /** Offset of the resource bytes, relative to the payload start. */
+    /** Index into the index header's shards array. */
+    shard: number;
+    /** Offset of the resource bytes, relative to its shard's start. */
     offset: number;
     /** Length of the resource bytes in bytes. */
     length: number;
 }
 
-export interface BundleHeader {
+export interface BundleIndexHeader {
     format: typeof BUNDLE_FORMAT;
     version: number;
     entryCount: number;
+    /** Client-relative shard file names, e.g. "gameData/bundle.0.bin";
+     * entries reference them by index. */
+    shards: Array<string>;
     entries: Array<BundleEntry>;
 }
 
-export interface DecodedBundleHeader {
-    header: BundleHeader;
-    /** Byte offset of the payload region within the bundle file. */
-    payloadStart: number;
-}
-
-/** Serializes the header as the bundle file prefix:
- * u32LE headerLength + header JSON bytes. */
-export function encodeHeader(header: BundleHeader): Uint8Array {
-    var jsonBytes = new TextEncoder().encode(JSON.stringify(header));
-    var out = new Uint8Array(4 + jsonBytes.byteLength);
-    new DataView(out.buffer).setUint32(0, jsonBytes.byteLength, true);
-    out.set(jsonBytes, 4);
-    return out;
-}
-
-/** Parses and validates the bundle file prefix. Throws on a truncated
- * prefix, wrong format/version, or a manifest inconsistent with
- * entryCount. Does not require the payload to be present. */
-export function decodeHeader(data: ArrayBuffer | Uint8Array): DecodedBundleHeader {
-    var bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    if (bytes.byteLength < 4) {
-        throw new Error("Bundle too short for header length prefix: "
-            + bytes.byteLength + " bytes");
-    }
-    var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    var headerLength = view.getUint32(0, true);
-    if (4 + headerLength > bytes.byteLength) {
-        throw new Error("Bundle header length " + headerLength
-            + " exceeds file size " + bytes.byteLength);
-    }
-    var header = JSON.parse(
-        new TextDecoder().decode(bytes.subarray(4, 4 + headerLength))) as BundleHeader;
+/** Validates an index header (shared by the generator's self-check and the
+ * browser loader). Throws on a wrong format/version, a manifest
+ * inconsistent with entryCount, or a missing/empty shards array, or an
+ * entry referencing a nonexistent shard. */
+export function validateHeader(header: BundleIndexHeader): void {
     if (header.format !== BUNDLE_FORMAT) {
         throw new Error("Not a " + BUNDLE_FORMAT + " (got format " + header.format + ")");
     }
@@ -83,7 +68,16 @@ export function decodeHeader(data: ArrayBuffer | Uint8Array): DecodedBundleHeade
                 ? header.entries.length + " manifest entries"
                 : "missing entries array"));
     }
-    return { header: header, payloadStart: 4 + headerLength };
+    if (!Array.isArray(header.shards) || header.shards.length === 0) {
+        throw new Error("Bundle header lists no shards");
+    }
+    for (var entry of header.entries) {
+        if (!(entry.shard >= 0) || entry.shard >= header.shards.length) {
+            throw new Error("Entry " + entry.url + " references shard "
+                + entry.shard + ", outside the 0.." + (header.shards.length - 1)
+                + " range the header declares");
+        }
+    }
 }
 
 /** Resolves url against base to the canonical absolute form. The generator

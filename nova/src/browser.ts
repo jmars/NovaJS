@@ -175,9 +175,9 @@ function hideLoadingScreen(): void {
 async function startGame() {
     world = new World();
     world.resources.set(GameDataResource, gameData);
-    // Bundle textures must be in the Assets cache before any plugin runs:
-    // spaceport's synchronous spriteFromPict would otherwise miss and hit
-    // the network. No-op (resolves immediately) in fallback mode.
+    // The bundle index must be loaded before any plugin runs so data and
+    // texture lookups go through the lazy Range loader instead of per-URL
+    // network fetches. No-op (resolves immediately) in fallback mode.
     await gameData.texturesReady;
     await world.addPlugin(NovaPlugin);
 

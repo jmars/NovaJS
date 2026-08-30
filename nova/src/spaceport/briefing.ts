@@ -112,9 +112,11 @@ export class BriefingDialog extends Menu<MissionDialogResult> {
 
     override async show(input: BriefingInput): Promise<MissionDialogResult> {
         await this.buildPromise;
-        this.setButtons(input);
+        // Buttons and pict load their textures lazily; wait for them so the
+        // dialog never shows half-drawn.
+        await this.setButtons(input);
         this.text.text = input.text;
-        this.setPict(input.graphic);
+        await this.setPict(input.graphic);
 
         this.container.visible = true;
         this.controls.bind();
@@ -136,7 +138,7 @@ export class BriefingDialog extends Menu<MissionDialogResult> {
     }
 
     // Button labels are per-mission, so the buttons are rebuilt per show.
-    private setButtons(input: BriefingInput) {
+    private async setButtons(input: BriefingInput) {
         if (this.acceptButton) {
             this.container.removeChild(this.acceptButton.container);
         }
@@ -156,15 +158,18 @@ export class BriefingDialog extends Menu<MissionDialogResult> {
             accept: this.acceptButton,
             ...(this.refuseButton ? { refuse: this.refuseButton } : {}),
         });
+        await Promise.all([this.acceptButton.buildPromise,
+            this.refuseButton?.buildPromise]);
     }
 
-    private setPict(graphic: number) {
+    private async setPict(graphic: number) {
         this.pictContainer.children.length = 0;
         // Desc graphic ids below 128 mean "no graphic" (stock convention).
         if (graphic < 128) {
             return;
         }
-        this.pictContainer.addChild(this.gameData.spriteFromPict(`nova:${graphic}`));
+        this.pictContainer.addChild(
+            await this.gameData.spriteFromPictAsync(`nova:${graphic}`));
     }
 }
 
