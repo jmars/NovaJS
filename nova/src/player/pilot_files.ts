@@ -221,17 +221,58 @@ export const DEFAULT_CHAR_ID = "nova:128";
 // system 128.
 const FALLBACK_START_SYSTEM = "nova:128";
 
-// Small deterministic PRNG (mulberry32) so pilot creation - and later the
-// random destination / availRandomRolls re-rolls - can be replayed from a
-// PlayerState's rngSeed. Returns numbers in [0, 1).
+// The engine RNG, ported from EV_Nova.dat FUN_004683b0 (Ghidra-decompiled,
+// byte-verified): a Park-Miller "minimal standard" LCG over ONE global 32-bit
+// state (DAT_007ccdd8), advanced in split 16-bit halves with multiplier
+// 0x41a7 = 16807 and modulus 0x7fffffff, and a bounded draw
+// ((int)bound * (state & 0xffff)) >> 16 that yields [0, bound).
+//
+//     lo = (state & 0xffff) * 16807;
+//     hi = (state >> 16) * 16807 + (lo >> 16);
+//     state = (lo & 0xffff) + 0x80000001
+//             + (hi & 0x7fff) << 16 + ((hi & 0x7fffffff) >> 15);
+//     if (state & 0x80000000) state += 0x7fffffff;
+//     draw = (bound * (state & 0xffff)) >> 16;   // 0x8000 low half draws as 0
+//
+// In the engine this is a single shared stream (rand(0) reseeds it from the
+// game clock); the port re-seeds it from the pilot's rngSeed at each
+// deterministic roll site instead, because the engine's continuous stream is
+// not reproducible across save/load.
+let rngState = 1;
+
+// Sets the LCG state (the DAT_007ccdd8 analog). State 0 self-corrects to 1
+// on the next step, exactly like the binary.
+export function seedRng(seed: number): void {
+    rngState = seed >>> 0;
+}
+
+// FUN_004683b0's bounded draw: advances the state once, then returns a
+// random integer in [0, bound) for bound > 0.
+export function randInt(bound: number): number {
+    const lo = Math.imul(rngState & 0xffff, 0x41a7);
+    const hi = Math.imul(rngState >>> 16, 0x41a7) + (lo >>> 16);
+    rngState = ((lo & 0xffff) + 0x80000001
+        + ((hi & 0x7fff) << 16) + ((hi & 0x7fffffff) >>> 15)) >>> 0;
+    if ((rngState & 0x80000000) !== 0) {
+        rngState = (rngState + 0x7fffffff) >>> 0;
+    }
+    // The binary masks the drawn low half to zero when it is exactly 0x8000
+    // (AND ECX,0xffff0000 at 0x46841e, on the register copy only).
+    const draw = (rngState & 0xffff) === 0x8000 ? 0 : rngState & 0xffff;
+    return (bound * draw) >> 16;
+}
+
+// Deterministic [0, 1) float on the same LCG stream, for callers that roll
+// fractions. The engine has no float API — its draws are always
+// rand(N) = (N * (state & 0xffff)) >> 16 with a signed 32-bit multiply —
+// so the float is one rand(0x8000) draw scaled; note the bound must stay
+// <= 0xffff for the (N * 0xffff) product to behave like the binary's
+// int32 multiply. makeRng(seed) seeds the stream (see seedRng) and returns
+// the draw function, so a PlayerState's rngSeed replays pilot creation
+// and later re-rolls.
 export function makeRng(seed: number): () => number {
-    let a = seed >>> 0;
-    return function() {
-        a = (a + 0x6D2B79F5) | 0;
-        let t = Math.imul(a ^ (a >>> 15), 1 | a);
-        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
+    seedRng(seed);
+    return () => randInt(0x8000) / 0x8000;
 }
 
 function pickStartSystem(charData: CharData, rng: () => number): string {

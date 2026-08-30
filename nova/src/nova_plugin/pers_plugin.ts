@@ -1,17 +1,13 @@
-// Përs (AI people) spawn + persistence (P3 of the ship-interaction layer):
-// when a system world is built, every përs whose LinkSyst matches the
-// system, whose ActiveOn test passes and who is neither dead nor
-// deactivated rolls 5% and warps in as a dude-style NPC carrying the
-// përs's own name (target display), shields (ShieldMod) and AI config.
-// Dying marks the përs dead in PlayerState (never respawns); being
-// damaged by the player latches a persistent grudge (flag 0x0001) that
-// makes it hunt the player regardless of the Aggress radius.
-//
-// Flagged approximation: stock ties the 5% roll to each düde-ship
-// creation, so a përs can tag along on any spawned dude ship. This engine
-// spawns NPCs once per system-world build (see fleet_plugin.ts), so the
-// roll is tied to warp-in instead — one seeded roll per përs per system
-// entry.
+// Përs (AI people) spawn + persistence, ported from the binary's
+// FUN_004235c0: when a system world is built, every përs whose LinkSyst
+// matches the system, whose ActiveOn test passes and who is neither dead
+// nor deactivated is eligible; ONE index is drawn with rand(1022) into the
+// 1024-slot përs table, and if the drawn slot is eligible that përs warps
+// in as a dude-style NPC carrying the përs's own name (target display),
+// shields (ShieldMod) and AI config. Dying marks the përs dead in
+// PlayerState (never respawns); being damaged by the player latches a
+// persistent grudge (flag 0x0001) that makes it hunt the player regardless
+// of the Aggress radius.
 
 import { PersData } from "novadatainterface/PersData";
 import { GameDataInterface } from "novadatainterface/GameDataInterface";
@@ -39,7 +35,7 @@ import {
 } from "../missions/stellar_filter";
 import { ControlBits, PlayerState } from "../player/player_state";
 import { PlayerStateResource } from "../player/player_state_component";
-import { makeRng } from "../player/pilot_files";
+import { randInt, seedRng } from "../player/pilot_files";
 import { makeDudeShip, setNoCollision } from "./dude";
 import { DamagedEvent, DeathEvent } from "./death_plugin";
 import { GameDataResource } from "./game_data_resource";
@@ -58,8 +54,12 @@ import { TargetComponent } from "./target_component";
 // survives warp and reload.
 const GRUDGE_FLAG = 0x0001;
 
-// Bible: a 5% chance that each eligible përs is also created.
-const SPAWN_CHANCE = 0.05;
+// The përs table in the binary has 1024 slots and the spawn roll draws one
+// index with rand(0x3fe) = rand(1022) (FUN_004235c0); the drawn përs warps
+// in iff its slot is eligible. The port's data layer does not expose engine
+// table slots, so the draw is composed as the same probability:
+// rand(1022) < eligibleCount, then a uniform pick among the eligible përs.
+const PERS_TABLE_ROLL = 0x3fe;
 
 export const PersComponent = new Component<{
     persId: string,
@@ -99,13 +99,16 @@ const SpawnPersSystem = new AsyncSystem({
         if (!systemData) {
             return;
         }
-        const systemRawId = rawIdOf(systemId);
 
-        // First collect every eligible përs that wins its 5% roll, then
-        // spawn only a bounded seeded-random subset of them (like the
-        // flët cap in fleet_plugin.ts — hundreds of përs match any given
-        // system, and letting them all warp in drops dozens of ships on
-        // the player at once).
+        // FUN_004235c0: scan every përs for eligibility (alive, LinkSyst
+        // matches, ActiveOn passes), then draw ONE index with rand(1022)
+        // into the 1024-slot përs table; if the drawn slot is eligible,
+        // exactly that përs warps in — ONE spawn per call, not one roll per
+        // përs. The engine reaches this roll through the ambient-slot branch
+        // of FUN_0041af90 (rand(7) == 0 per ambient ship slot) and via
+        // sÿst Peripherals pairs (rand(100) < percent forces a specific
+        // përs); both cadences are sÿst data, which this port does not
+        // model — the world build makes one call per system entry.
         const matching: Array<{ pers: PersData; shipType: string }> = [];
         for (const persId of ids.Pers) {
             let pers: PersData;
@@ -125,26 +128,26 @@ const SpawnPersSystem = new AsyncSystem({
             if (!pers.shipType) {
                 continue;
             }
-            const rng = makeRng(persSpawnSeed(state, rawIdOf(persId), systemRawId));
-            // See the file comment: the roll is tied to warp-in, one draw
-            // per përs per system entry.
-            if (rng() < SPAWN_CHANCE) {
-                matching.push({ pers, shipType: pers.shipType });
-            }
+            matching.push({ pers, shipType: pers.shipType });
         }
 
+        // One shared LCG stream per entry, seeded from the pilot's rngSeed
+        // (the engine's stream is global and continuous; see pilot_files).
         const weaponOutfits = await weaponOutfitMap(gameData);
-        for (const { pers, shipType: shipTypeId } of choosePers(matching,
-            makeRng(systemPersSeed(state, systemRawId)))) {
-            let shipData: ShipData;
+        seedRng(state.rngSeed);
+        if (randInt(PERS_TABLE_ROLL) < matching.length) {
+            const { pers, shipType: shipTypeId } =
+                matching[randInt(matching.length)];
+            let shipData: ShipData | null = null;
             try {
                 shipData = await gameData.data.Ship.get(shipTypeId);
             }
             catch {
                 console.warn(`[pers] unknown shïp ${shipTypeId} (përs ${pers.id})`);
-                continue;
             }
-            spawnPers(entities, shipData, pers, state, weaponOutfits);
+            if (shipData) {
+                spawnPers(entities, shipData, pers, state, weaponOutfits);
+            }
         }
     },
 });
@@ -282,45 +285,6 @@ async function weaponOutfitMap(gameData: GameDataInterface):
         }
     }
     return map;
-}
-
-// How many përs a single system entry may spawn at most. The 5% roll
-// fires per eligible përs and most përs LinkSyst -1 (any system), so
-// without the cap a busy system warps in dozens at once.
-export const MAX_PERS_PER_SYSTEM = 4;
-
-// The subset pick's seed: per system entry (pilot, system, date), salted
-// with a "PERS" domain tag so the përs subset chosen here is not
-// correlated with the flët subset systemFleetSeed picks for the same
-// entry.
-function systemPersSeed(state: PlayerState, systemRawId: number): number {
-    const { day, month, year } = state.date;
-    const dayCount = year * 365 + month * 40 + day;
-    return (state.rngSeed ^ (systemRawId * 0x85EB)
-        ^ (dayCount * 0xC2B2AE35) ^ 0x50455253) >>> 0;
-}
-
-// Seeded Fisher-Yates over a copy, then the cap. The stream order
-// (ids.Pers is data-order) and seed are both stable, so the pick is
-// deterministic across reloads and peers.
-function choosePers<T>(pers: T[], rng: () => number): T[] {
-    const pool = [...pers];
-    for (let i = pool.length - 1; i > 0; i--) {
-        const j = Math.floor(rng() * (i + 1));
-        [pool[i], pool[j]] = [pool[j]!, pool[i]!];
-    }
-    return pool.slice(0, MAX_PERS_PER_SYSTEM);
-}
-
-// One përs's spawn roll per entry: seeded by pilot, përs, system and game
-// date, like the flët and mission spawn rolls — so reloads and peers agree
-// on whether the përs appeared. Never Math.random.
-function persSpawnSeed(state: PlayerState, persRawId: number,
-    systemRawId: number): number {
-    const { day, month, year } = state.date;
-    const dayCount = year * 365 + month * 40 + day;
-    return (state.rngSeed ^ (persRawId * 0x9E37) ^ (systemRawId * 0x85EB)
-        ^ (dayCount * 0xC2B2AE35)) >>> 0;
 }
 
 // Marks a destroyed përs dead so it never spawns again. Runs before

@@ -1,8 +1,8 @@
-// Headless World specs for përs spawn + persistence (P3): the seeded 5%
-// warp-in roll and its determinism, the LinkSyst and ActiveOn gates, the
-// dead/deactivated persistence rule, death/grudge bookkeeping, and what
-// the spawned ship carries (name, AI config, weapons, ShieldMod). Run
-// with:
+// Headless World specs for përs spawn + persistence, ported from
+// FUN_004235c0: the one-draw rand(1022) warp-in roll and its determinism,
+// the LinkSyst and ActiveOn gates, the dead/deactivated persistence rule,
+// death/grudge bookkeeping, and what the spawned ship carries (name, AI
+// config, weapons, ShieldMod). Run with:
 //   npx esbuild --bundle --platform=node nova/src/nova_plugin/pers_test.ts \
 //       --outfile=/tmp/pers_test.js && node_modules/.bin/jasmine /tmp/pers_test.js
 
@@ -21,13 +21,13 @@ import {
 } from "../missions/test_fixtures";
 import { PlayerState } from "../player/player_state";
 import { PlayerStateResource } from "../player/player_state_component";
-import { makeRng } from "../player/pilot_files";
+import { randInt, seedRng } from "../player/pilot_files";
 import { CollisionVulnerabilityComponent } from "./collision_interaction";
 import { DamagedEvent, DeathEvent } from "./death_plugin";
 import { AIConfigComponent } from "./npc_ai_plugin";
 import { DeathAISystem } from "./npc_plugin";
 import { OutfitsStateComponent } from "./outfit_plugin";
-import { PersComponent, PersPlugin, MAX_PERS_PER_SYSTEM } from "./pers_plugin";
+import { PersComponent, PersPlugin } from "./pers_plugin";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { ShipDataComponent } from "./ship_plugin";
 import { ShieldComponent } from "./health_plugin";
@@ -72,55 +72,32 @@ const DAMAGE = {
     passThroughShield: 0, knockback: 0,
 };
 
-// Mirrors persSpawnSeed in pers_plugin.ts so the specs can pick state
-// seeds that deterministically land on either side of the 5% roll.
-function spawnRoll(state: PlayerState, persRawId: number = PERS_RAW_ID): number {
-    const { day, month, year } = state.date;
-    const dayCount = year * 365 + month * 40 + day;
-    const seed = (state.rngSeed ^ (persRawId * 0x9E37)
-        ^ (SYSTEM_RAW_ID * 0x85EB) ^ (dayCount * 0xC2B2AE35)) >>> 0;
-    return makeRng(seed)();
+// Mirrors the plugin's warp-in draw (FUN_004235c0: one rand(1022) draw per
+// system entry over the përs table; a hit needs rand(1022) < eligible
+// count) so the specs can pick state seeds that deterministically land on
+// either side of the draw.
+function spawnHit(state: PlayerState, eligible: number): boolean {
+    seedRng(state.rngSeed);
+    return randInt(0x3fe) < eligible;
 }
 
-function findSeed(predicate: (roll: number) => boolean): number {
-    for (let seed = 1; seed < 10_000; seed++) {
-        if (predicate(spawnRoll(makePlayerState(seed)))) {
+function findSeed(eligible: number, wantHit: boolean): number {
+    for (let seed = 1; seed < 200_000; seed++) {
+        if (spawnHit(makePlayerState(seed), eligible) === wantHit) {
             return seed;
         }
     }
-    throw new Error("no pilot seed found for the requested roll side");
+    throw new Error("no pilot seed found for the requested draw side");
 }
 
-// State seeds whose përs roll lands below / above the 5% chance.
-const SPAWN_SEED = findSeed(roll => roll < 0.05);
-const NO_SPAWN_SEED = findSeed(roll => roll >= 0.05);
+// State seeds whose përs draw hits / misses with one eligible përs.
+const SPAWN_SEED = findSeed(1, true);
+const NO_SPAWN_SEED = findSeed(1, false);
 
-// Extra përs the cap spec registers (with PERS_ID: 60 total), all
-// LinkSyst -1 so all of them are eligible and roll.
+// Extra përs registered for the one-draw spec (with PERS_ID: 60 total),
+// all LinkSyst -1 so all of them are eligible.
 const MANY_EXTRA = 59;
 const MANY_FIRST_RAW_ID = 401;
-
-// How many of the mock përs win their 5% roll under this state.
-function winners(state: PlayerState): number {
-    let count = spawnRoll(state) < 0.05 ? 1 : 0;
-    for (let i = 0; i < MANY_EXTRA; i++) {
-        if (spawnRoll(state, MANY_FIRST_RAW_ID + i) < 0.05) {
-            count++;
-        }
-    }
-    return count;
-}
-
-// A state seed where at least 6 of the 60 mock përs win their roll, so
-// the per-system cap is what bounds the spawn.
-const CAP_SEED = (() => {
-    for (let seed = 1; seed < 10_000; seed++) {
-        if (winners(makePlayerState(seed)) >= 6) {
-            return seed;
-        }
-    }
-    throw new Error("no pilot seed found with >=6 winning përs rolls");
-})();
 
 async function flush(): Promise<void> {
     for (let i = 0; i < 5; i++) {
@@ -181,8 +158,8 @@ function addPlayer(world: World): Entity {
 }
 
 describe("përs spawn", () => {
-    it("rolls 5% per warp-in, deterministically from the pilot seed", async () => {
-        // Same seed -> same spawn, on both sides of the 5% boundary.
+    it("draws one rand(1022) table slot per warp-in, deterministically from the pilot seed", async () => {
+        // Same seed -> same spawn, on both sides of the draw.
         const first = await makeTestWorld(SYSTEM_ID, makePlayerState(SPAWN_SEED));
         expect(first.persShips()).toEqual([`pers-ship ${PERS_ID}`]);
         const second = await makeTestWorld(SYSTEM_ID, makePlayerState(SPAWN_SEED));
@@ -260,21 +237,25 @@ describe("përs spawn", () => {
     });
 });
 
-describe("përs spawn cap", () => {
-    it("spawns at most MAX_PERS_PER_SYSTEM përs per system entry", async () => {
-        // Sanity: the seed really has >=6 roll winners, so the cap (not
-        // the roll) is what bounds the spawn.
-        expect(winners(makePlayerState(CAP_SEED))).toBeGreaterThanOrEqual(6);
-        const capped = await makeTestWorld(SYSTEM_ID,
-            makePlayerState(CAP_SEED), {}, MANY_EXTRA);
-        expect(capped.persShips().length).toEqual(MAX_PERS_PER_SYSTEM);
+describe("përs one-draw spawn model", () => {
+    it("spawns at most one përs per system entry (one table draw)", async () => {
+        // FUN_004235c0 draws ONE slot per call: a hit warps in exactly one
+        // përs no matter how many are eligible (here 60).
+        const hit = findSeed(MANY_EXTRA + 1, true);
+        const many = await makeTestWorld(SYSTEM_ID,
+            makePlayerState(hit), {}, MANY_EXTRA);
+        expect(many.persShips().length).toEqual(1);
+
+        const miss = findSeed(MANY_EXTRA + 1, false);
+        const none = await makeTestWorld(SYSTEM_ID,
+            makePlayerState(miss), {}, MANY_EXTRA);
+        expect(none.persShips()).toEqual([]);
     });
 
-    it("picks the same capped subset on every entry with the same state", async () => {
-        const first = await makeTestWorld(SYSTEM_ID,
-            makePlayerState(CAP_SEED), {}, MANY_EXTRA);
-        const second = await makeTestWorld(SYSTEM_ID,
-            makePlayerState(CAP_SEED), {}, MANY_EXTRA);
+    it("picks the same përs on every entry with the same state", async () => {
+        const state = makePlayerState(findSeed(MANY_EXTRA + 1, true));
+        const first = await makeTestWorld(SYSTEM_ID, state, {}, MANY_EXTRA);
+        const second = await makeTestWorld(SYSTEM_ID, state, {}, MANY_EXTRA);
         expect(second.persShips()).toEqual(first.persShips());
     });
 });

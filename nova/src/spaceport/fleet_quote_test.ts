@@ -1,60 +1,62 @@
-// Headless specs for the pure flët hyperspace-entry quote resolver. Run with:
+// Headless specs for the pure flët hyperspace-entry quote resolver
+// (FUN_004259b0's '#' rule on the shared engine LCG). Run with:
 //   npx esbuild --bundle --platform=node nova/src/spaceport/fleet_quote_test.ts \
 //       --outfile=/tmp/fleet_quote_test.js && node_modules/.bin/jasmine /tmp/fleet_quote_test.js
 
 import { getDefaultStringSetData } from "novadatainterface/StringSetData";
-import { makeRng } from "../player/pilot_files";
+import { seedRng } from "../player/pilot_files";
 import { fleetQuote, fleetQuoteFromSet } from "./fleet_quote";
 
 
-// An rng replaying a fixed sequence, so exact expectations can be written.
-function seqRng(values: number[]): () => number {
-    let i = 0;
-    return () => values[i++ % values.length];
-}
-
 describe("fleet quote resolver", () => {
-    it("replaces every '#' with a random digit", () => {
-        // Pick index 1 (0.75 * 2), then digits 4, 0, 9.
-        const rng = seqRng([0.75, 0.4, 0.0, 0.9]);
-        expect(fleetQuote(128, ["No '##' here", "Bogeys #-#-#"], rng))
-            .toEqual("Bogeys 4-0-9");
+    it("replaces the first '#' of a run with 1-9 and later '#' with 0-9", () => {
+        // "##-##": each run starts with a 1-9 digit, its second '#' is 0-9.
+        seedRng(12345);
+        expect(fleetQuote(128, ["A ##-## B"])).toMatch(/^A [1-9][0-9]-[1-9][0-9] B$/);
     });
 
-    it("picks deterministically under a seeded rng", () => {
+    it("restarts the nonzero digit after a separator", () => {
+        // "#-#-#" is three separate runs, so every digit is 1-9.
+        seedRng(777);
+        expect(fleetQuote(128, ["Bogeys #-#-#"])).toMatch(/^Bogeys [1-9]-[1-9]-[1-9]$/);
+    });
+
+    it("picks deterministically under a seeded stream", () => {
         const strings = ["Alpha", "Bravo", "Charlie"];
-        const first = fleetQuote(500, strings, makeRng(12345));
-        const second = fleetQuote(500, strings, makeRng(12345));
+        seedRng(12345);
+        const first = fleetQuote(500, strings);
+        seedRng(12345);
+        const second = fleetQuote(500, strings);
         expect(first).toEqual(second!);
         expect(strings).toContain(first!);
     });
 
     it("yields the same digits for the same seed", () => {
-        const first = fleetQuote(500, ["Fuel: # weeks"], makeRng(777));
-        const second = fleetQuote(500, ["Fuel: # weeks"], makeRng(777));
+        seedRng(777);
+        const first = fleetQuote(500, ["Fuel: # weeks"]);
+        seedRng(777);
+        const second = fleetQuote(500, ["Fuel: # weeks"]);
         expect(first).toEqual(second);
-        expect(first!).toMatch(/^Fuel: \d weeks$/);
+        expect(first!).toMatch(/^Fuel: [1-9] weeks$/);
     });
 
     it("returns null when the quote id is negative", () => {
-        let called = false;
-        const rng = () => { called = true; return 0; };
-        expect(fleetQuote(-1, ["Anything"], rng)).toBeNull();
-        // No rng consumption for a missing quote.
-        expect(called).toBeFalse();
+        seedRng(1);
+        expect(fleetQuote(-1, ["Anything"])).toBeNull();
     });
 
     it("returns null when the string set is missing or empty", () => {
-        expect(fleetQuote(128, null, seqRng([0.5]))).toBeNull();
-        expect(fleetQuote(128, undefined, seqRng([0.5]))).toBeNull();
-        expect(fleetQuote(128, [], seqRng([0.5]))).toBeNull();
+        seedRng(1);
+        expect(fleetQuote(128, null)).toBeNull();
+        expect(fleetQuote(128, undefined)).toBeNull();
+        expect(fleetQuote(128, [])).toBeNull();
     });
 
     it("resolves from a StringSetData, or null when it is missing", () => {
+        seedRng(999);
         const set = { ...getDefaultStringSetData(), strings: ["Pay: # cr"] };
-        expect(fleetQuoteFromSet(300, set, seqRng([0.25, 0.35])))
-            .toEqual("Pay: 3 cr");
-        expect(fleetQuoteFromSet(300, null, seqRng([0.25]))).toBeNull();
-        expect(fleetQuoteFromSet(-1, set, seqRng([0.25]))).toBeNull();
+        expect(fleetQuoteFromSet(300, set)).toMatch(/^Pay: [1-9] cr$/);
+        expect(fleetQuoteFromSet(300, null)).toBeNull();
+        expect(fleetQuoteFromSet(-1, set)).toBeNull();
     });
 });

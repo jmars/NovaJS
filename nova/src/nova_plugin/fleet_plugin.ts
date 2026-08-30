@@ -1,7 +1,8 @@
-// Random flët spawning on system entry (P6 stretch goal, deliberately
-// minimal): when a system world is built, every flët whose LinkSyst matches
-// the system and whose ActivateOn test passes spawns its lead ship plus a
-// seeded random count of each escort group as plain NPCs.
+// Random flët spawning on system entry, ported from the binary's
+// FUN_00425280/FUN_004259b0: when a system world is built, every flët whose
+// LinkSyst matches the system and whose ActivateOn test passes is eligible,
+// ONE index is drawn into the 256-slot flët table, and if the drawn slot is
+// eligible that flët (lead ship + escort groups) warps in as plain NPCs.
 //
 // Flagged approximation: flëts are atmosphere-only in EV Nova, approximated
 // by requiring at least one inhabited planet (spöb 0x20 cleared) in the
@@ -31,10 +32,17 @@ import {
 } from "../missions/stellar_filter";
 import { ControlBits, PlayerState } from "../player/player_state";
 import { PlayerStateResource } from "../player/player_state_component";
-import { makeRng } from "../player/pilot_files";
+import { randInt, seedRng } from "../player/pilot_files";
 import { makeDudeShip } from "./dude";
 import { GameDataResource } from "./game_data_resource";
 import { SystemIdResource } from "./system_id_resource";
+
+// The flët table in the binary has 256 slots and the spawn roll draws one
+// index into it (FUN_00425280: idx = rand(0x100); spawn iff slot idx is
+// eligible). The port's data layer does not expose engine table slots, so
+// the draw is composed as the same probability: a hit needs
+// rand(256) < eligibleCount, then a uniform pick among the eligible flëts.
+const FLEET_TABLE_SLOTS = 0x100;
 
 const FleetsSpawnedResource = new Resource<{ val: boolean }>('FleetsSpawnedResource');
 
@@ -70,12 +78,17 @@ const SpawnFleetsSystem = new AsyncSystem({
         if (!systemHasInhabitedPlanet(systemData, env)) {
             return;
         }
-        const systemRawId = rawIdOf(systemId);
         const quotes: string[] = [];
 
-        // First collect every matching flët, then spawn only a bounded
-        // seeded-random subset of them (EV Nova throws a few flëts at a
-        // system, not every one that matches).
+        // FUN_00425280: scan every flët for eligibility (exists, LinkSyst
+        // matches, ActivateOn passes), then draw ONE index into the 256-slot
+        // flët table; if the drawn slot is eligible, that whole flët (lead
+        // ship + escort groups) warps in. One draw per call — the engine
+        // reaches this roll via the ambient-slot branch of FUN_0041af90
+        // (per ambient ship slot, gated rand(7) != 0 then rand(7) == 0), and
+        // how many ambient slots a system gets is sÿst data (the Count
+        // field at sÿst+0x8e), which this port does not model; the world
+        // build makes one call per system entry.
         const matching: Array<{ fleetId: string; fleet: FleetData }> = [];
         for (const fleetId of ids.Fleet) {
             let fleet: FleetData;
@@ -90,10 +103,12 @@ const SpawnFleetsSystem = new AsyncSystem({
             }
         }
 
-        for (const { fleetId, fleet } of chooseFleets(matching,
-            makeRng(systemFleetSeed(state, systemRawId)))) {
-            const rng = makeRng(fleetSpawnSeed(state, rawIdOf(fleetId), systemRawId));
-            quotes.push(...await spawnFleet(gameData, env, entities, fleet, rng));
+        // One shared LCG stream per entry, seeded from the pilot's rngSeed
+        // (the engine's stream is global and continuous; see pilot_files).
+        seedRng(state.rngSeed);
+        if (randInt(FLEET_TABLE_SLOTS) < matching.length) {
+            const { fleet } = matching[randInt(matching.length)];
+            quotes.push(...await spawnFleet(gameData, env, entities, fleet));
         }
 
         const fleetQuotes = world.resources.get(FleetQuotesResource);
@@ -153,35 +168,22 @@ function fleetActive(fleet: FleetData, state: PlayerState, systemId: string,
 }
 
 // Spawns the flët's ships and returns its hyperspace-entry quote text
-// (empty when the flët has no Quote STR# or the set is missing).
+// (empty when the flët has no Quote STR# or the set is missing). All rolls
+// use the shared engine LCG (randInt), like FUN_004259b0.
 async function spawnFleet(gameData: GameDataInterface, env: MissionEnv,
-    entities: EntityMap, fleet: FleetData,
-    rng: () => number): Promise<string[]> {
-    const quotes: string[] = [];
-    if (fleet.quote >= 0) {
-        const strId = globalId(env.prefix, fleet.quote);
-        try {
-            const quote = fleetQuoteFromSet(fleet.quote,
-                await gameData.data.StringSet.get(strId), rng);
-            if (quote !== null) {
-                quotes.push(quote);
-            }
-        }
-        catch {
-            console.warn(`[fleets] unknown STR# ${strId} (flët ${fleet.id})`);
-        }
-    }
-
+    entities: EntityMap, fleet: FleetData): Promise<string[]> {
     const ships: string[] = [];
     if (fleet.leadShipType) {
         ships.push(fleet.leadShipType);
     }
+    // Escort group count = Min + rand(Max - Min + 1), four groups, exactly
+    // FUN_004259b0's roll (flët+0xc/0x14 min/max per group).
     for (const escort of fleet.escorts) {
         const span = escort.max - escort.min + 1;
         if (span <= 0) {
             continue;
         }
-        const count = escort.min + Math.floor(rng() * span);
+        const count = escort.min + randInt(span);
         for (let i = 0; i < count; i++) {
             ships.push(escort.ship!);
         }
@@ -202,44 +204,23 @@ async function spawnFleet(gameData: GameDataInterface, env: MissionEnv,
         const ship = makeDudeShip(null, shipData, fleet.govt);
         entities.set(`fleet-ship ${fleet.id} ${index}`, ship);
     }
-    return quotes;
-}
 
-// One flët's spawn rolls per entry: seeded by pilot, flët, system and game
-// date, like the mission spawn rolls.
-function fleetSpawnSeed(state: PlayerState, fleetRawId: number,
-    systemRawId: number): number {
-    const { day, month, year } = state.date;
-    const dayCount = year * 365 + month * 40 + day;
-    return (state.rngSeed ^ (fleetRawId * 0x9E37) ^ (systemRawId * 0x85EB)
-        ^ (dayCount * 0xC2B2AE35)) >>> 0;
-}
-
-// How many matching flëts a single system entry may spawn at most. Stock
-// data has over a hundred flëts, most matching any system — without the cap
-// every entry drops hundreds of ships on the player.
-export const MAX_FLEETS_PER_SYSTEM = 3;
-
-// The subset pick's seed: per system entry (pilot, system, date), with no
-// per-flët term, so the same system on the same date always yields the same
-// subset.
-function systemFleetSeed(state: PlayerState, systemRawId: number): number {
-    const { day, month, year } = state.date;
-    const dayCount = year * 365 + month * 40 + day;
-    return (state.rngSeed ^ (systemRawId * 0x85EB)
-        ^ (dayCount * 0xC2B2AE35)) >>> 0;
-}
-
-// Seeded Fisher-Yates over a copy, then the cap. The stream order (ids.Fleet
-// is data-order) and seed are both stable, so the pick is deterministic
-// across reloads and peers.
-function chooseFleets<T>(fleets: T[], rng: () => number): T[] {
-    const pool = [...fleets];
-    for (let i = pool.length - 1; i > 0; i--) {
-        const j = Math.floor(rng() * (i + 1));
-        [pool[i], pool[j]] = [pool[j]!, pool[i]!];
+    // The quote is resolved after the ships, as in FUN_004259b0's tail.
+    const quotes: string[] = [];
+    if (fleet.quote >= 0) {
+        const strId = globalId(env.prefix, fleet.quote);
+        try {
+            const quote = fleetQuoteFromSet(fleet.quote,
+                await gameData.data.StringSet.get(strId));
+            if (quote !== null) {
+                quotes.push(quote);
+            }
+        }
+        catch {
+            console.warn(`[fleets] unknown STR# ${strId} (flët ${fleet.id})`);
+        }
     }
-    return pool.slice(0, MAX_FLEETS_PER_SYSTEM);
+    return quotes;
 }
 
 export const FleetPlugin: Plugin = {
