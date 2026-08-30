@@ -13,19 +13,15 @@ import { Query } from "nova_ecs/query";
 import { Resource } from "nova_ecs/resource";
 import { System } from "nova_ecs/system";
 import * as PIXI from "pixi.js";
-import { Subject } from "rxjs";
-import { v4 } from "uuid";
 import { GameData } from "../client/gamedata/GameData";
 import { GameDataResource } from "../nova_plugin/game_data_resource";
 import { ArmorComponent, ShieldComponent } from "../nova_plugin/health_plugin";
-import { makeNpc } from "../nova_plugin/npc_plugin";
 import { PlanetDataComponent } from "../nova_plugin/planet_plugin";
 import { PlayerShipSelector } from "../nova_plugin/player_ship_plugin";
 import { ShipDataComponent } from "../nova_plugin/ship_plugin";
 import { Stat } from "../nova_plugin/stat";
 import { TargetComponent } from "../nova_plugin/target_component";
 import { ChangeSecondaryEvent } from "../nova_plugin/weapon_plugin";
-import { Button } from "../spaceport/button";
 import { AnimationGraphic } from "./animation_graphic";
 import { AnimationGraphicComponent } from "./animation_graphic_plugin";
 import { PixiAppResource } from "./pixi_app_resource";
@@ -48,17 +44,11 @@ class StatusBar {
     private targetSprite = new PIXI.Sprite();
 
     private text: { [index: string]: PIXI.Text } = {};
-    private addEnemyButton: Button;
-    readonly addEnemy: Subject<undefined>;
 
     constructor(private statusBarData: StatusBarData, private gameData: GameData,
                 private renderer: PIXI.Renderer | PIXI.IRenderer) {
         this.buildPromise = this.build();
         this.container.name = 'StatusBar';
-        this.addEnemyButton = new Button(gameData, 'Add Enemy', 60);
-        this.addEnemyButton.container.position.x = 65;
-        this.addEnemyButton.container.position.y = 530;
-        this.addEnemy = this.addEnemyButton.click;
     }
 
     private async build() {
@@ -77,7 +67,6 @@ class StatusBar {
             this.statusBarData.dataAreas.targeting.size[1] / 2;
 
         this.makeText();
-        this.container.addChild(this.addEnemyButton.container);
         this.built = true;
     }
 
@@ -391,14 +380,6 @@ export const StatusBarPlugin: Plugin = {
         stage.addChild(statusBar.container);
         statusBar.container.position.x = window.innerWidth - statusBar.container.width;
         statusBar.container.position.y = 0;
-        statusBar.addEnemy.subscribe(async () => {
-            const randomIndex = Math.floor(Math.random() * (await gameData.ids).Ship.length);
-            const randomShipId = (await gameData.ids).Ship[randomIndex];
-            const shipData = await gameData.data.Ship.get(randomShipId);
-
-            const npc = makeNpc(shipData);
-            world.entities.set(v4(), npc);
-        });
 
         world.resources.set(StatusBarResource, statusBar);
 
