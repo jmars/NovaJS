@@ -2,7 +2,9 @@
 // and Coward fleeing, warship/interceptor Aggress-range targeting, and
 // retaliation on DamagedEvent. Runs a real nova_ecs World with only
 // NpcAIPlugin (no NpcPlugin) so the generic random-target AI does not
-// interfere; makeDudeShip supplies the AI components under test.
+// interfere — except the last describe, which adds NpcPlugin to exercise
+// the shared neutral-player gate in ChooseRandomTarget. makeDudeShip
+// supplies the AI components under test.
 
 import "jasmine";
 import { MockGameData } from "novadatainterface/MockGameData";
@@ -21,13 +23,14 @@ import { makePlayerState, makeTestEnv } from "../missions/test_fixtures";
 import { BoardingProfileComponent, makeDudeShip } from "./dude";
 import { DamagedEvent } from "./death_plugin";
 import { AIConfigComponent, AIStateComponent, NpcAIPlugin } from "./npc_ai_plugin";
-import { GovernmentComponent } from "./npc_plugin";
+import { GovernmentComponent, NpcPlugin, playerIsHostile } from "./npc_plugin";
 import { PlayerStateResource } from "../player/player_state_component";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { PlanetComponent } from "./planet_plugin";
 import { makeShip } from "./make_ship";
 import { ArmorComponent, ShieldComponent } from "./health_plugin";
 import { ShipComponent } from "./ship_plugin";
+import { GameDataResource } from "./game_data_resource";
 import { Stat } from "./stat";
 import { TargetComponent } from "./target_component";
 import { WeaponsStateComponent } from "./weapons_state";
@@ -57,6 +60,7 @@ function makeWorld(envOverrides: Partial<MissionEnv> = {}): World {
     gameData.data.Ship.map.set(SHIP_ID, SHIP);
     const world = new World();
     world.resources.set(TimeResource, { ...TIME });
+    world.resources.set(GameDataResource, gameData);
     world.resources.set(MissionEnvResource,
         { ...makeTestEnv().env, ...envOverrides });
     world.addPlugin(NpcAIPlugin);
@@ -349,6 +353,61 @@ describe("düde AIType behaviors", () => {
         expect(npc.components.get(TargetComponent)!.target)
             .toEqual(player.uuid);
         expect(npc.components.get(AIStateComponent)!.attackedBy)
+            .toEqual(player.uuid);
+    });
+
+    it("playerIsHostile gates on govt id, env resolution and player state",
+        () => {
+            const world = makeWorld();
+            // No player state resource yet.
+            expect(playerIsHostile("nova:130", world)).toBeFalse();
+
+            const state = makePlayerState();
+            world.resources.set(PlayerStateResource, state);
+            expect(playerIsHostile(null, world)).toBeFalse();
+            expect(playerIsHostile("nova:130", world)).toBeFalse(); // 0
+            expect(playerIsHostile("nova:999", world)).toBeFalse();
+
+            state.legalRecord["nova:130"] = -1; // Polaris, crimeTol 0
+            expect(playerIsHostile("nova:130", world)).toBeTrue();
+        });
+});
+
+// The generic NpcPlugin random-target AI (ChooseRandomTarget) shares the
+// AggroRange rule: the player is only rollable once hostile to the
+// chooser's government. These specs run both plugins.
+describe("legacy random-target AI vs the player", () => {
+    function makeRandomTargetWorld(
+        envOverrides: Partial<MissionEnv> = {}): World {
+        const world = makeWorld(envOverrides);
+        world.addPlugin(NpcPlugin);
+        return world;
+    }
+
+    it("does not roll a neutral player as a random target", () => {
+        const world = makeRandomTargetWorld();
+        // A trader: AggroRange ignores aiType 1, so any player target
+        // could only come from ChooseRandomTarget.
+        const npc = addEntity(world, "npc",
+            makeAiShip(TRADER_DUDE, [0, 0]));
+        addEntity(world, "player", makePlayerShip([100, 0]));
+        world.step();
+
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+    });
+
+    it("rolls a hostile player as a random target", () => {
+        const world = makeRandomTargetWorld();
+        const state = makePlayerState();
+        state.legalRecord["nova:130"] = -1; // Polaris, crimeTol 0
+        world.resources.set(PlayerStateResource, state);
+        const npc = addEntity(world, "npc",
+            makeAiShip(TRADER_DUDE, [0, 0]));
+        const player = addEntity(world, "player", makePlayerShip([100, 0]));
+        world.step();
+
+        // The player is the only valid target left, so the roll is forced.
+        expect(npc.components.get(TargetComponent)!.target)
             .toEqual(player.uuid);
     });
 });

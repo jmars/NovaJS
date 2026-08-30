@@ -22,9 +22,8 @@ import { System } from "nova_ecs/system";
 import { World } from "nova_ecs/world";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import { govtsAreEnemies } from "../player/legal_status";
-import { PlayerStateResource } from "../player/player_state_component";
 import { DamagedEvent } from "./death_plugin";
-import { FollowAI, GovernmentComponent, ShootAllWeaponsAI } from "./npc_plugin";
+import { FollowAI, GovernmentComponent, playerIsHostile, ShootAllWeaponsAI } from "./npc_plugin";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { PlanetComponent } from "./planet_plugin";
 import { ArmorComponent, ShieldComponent } from "./health_plugin";
@@ -150,19 +149,12 @@ export const AggroRangeSystem = new System({
                 .lengthSquared <= radiusSquared);
 
         // The player is only a fallback target when genuinely hostile to
-        // the NPC's government (legalRecord < -crimeTol, mirroring
-        // smuggling.ts's scan gate). An NPC with no government, or a
-        // government the env can't resolve, never auto-targets the player.
+        // the NPC's government; an NPC with no government (or one the env
+        // can't resolve) never auto-targets the player.
         let hostilePlayer: string | undefined;
-        if (player !== undefined && playerInRange && govt?.id) {
-            const env = world.resources.get(MissionEnvResource);
-            const npcGovt = env?.government(govt.id);
-            const playerState = world.resources.get(PlayerStateResource);
-            if (npcGovt && playerState
-                && (playerState.legalRecord[npcGovt.id] ?? 0)
-                    < -npcGovt.crimeTol) {
-                hostilePlayer = player;
-            }
+        if (player !== undefined && playerInRange
+            && playerIsHostile(govt?.id, world)) {
+            hostilePlayer = player;
         }
 
         // Interceptors go for the player first; warships prefer enemy ships.
