@@ -154,6 +154,10 @@ async function jumpTo({ entity, to, uuid }: { entity: Entity, to: string, uuid: 
 async function startGame() {
     world = new World();
     world.resources.set(GameDataResource, gameData);
+    // Bundle textures must be in the Assets cache before any plugin runs:
+    // spaceport's synchronous spriteFromPict would otherwise miss and hit
+    // the network. No-op (resolves immediately) in fallback mode.
+    await gameData.texturesReady;
     await world.addPlugin(NovaPlugin);
 
     // Load (or create) the pilot for this browser, and register it on the

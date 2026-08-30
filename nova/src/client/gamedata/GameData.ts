@@ -32,6 +32,7 @@ import * as PIXI from 'pixi.js';
 import * as sound from '@pixi/sound';
 import urlJoin from 'url-join';
 import { dataPath, idsPath } from '../../common/GameDataPaths';
+import { bundleReady, texturesReady } from './bundle_loader';
 import PQueue from 'p-queue';
 
 class WeaponGettable extends Gettable<WeaponData> {
@@ -58,6 +59,10 @@ export class GameData implements GameDataInterface {
     public readonly ids: Promise<NovaIDs>;
     readonly preloadData: Promise<PreloadData>;
     public loaded = Promise.resolve();
+    /** Resolves once the bundle's textures are in the Assets cache (no-op in
+     * network-fallback mode). Browser boot awaits this so synchronous
+     * Texture.from/Sprite.from calls never fall through to the network. */
+    public readonly texturesReady = texturesReady;
     private loadQueue = new PQueue({
         autoStart: true,
         concurrency: 16,
@@ -107,7 +112,10 @@ export class GameData implements GameDataInterface {
     }
 
     private async preload() {
-        const data = await (await fetch('preloadData.json')).json() as PreloadData;
+        // The bundle (when present) serves this through the BundleLoadParser;
+        // otherwise the stock parser fetches it as before.
+        await bundleReady;
+        const data = await PIXI.Assets.load<PreloadData>('preloadData.json');
         for (const [uncastKey, val] of Object.entries(data)) {
             const key = uncastKey as keyof typeof data;
             this.data[key].gotten = val;
@@ -116,6 +124,9 @@ export class GameData implements GameDataInterface {
     }
 
     private async getUrl(url: string, priority = 0): Promise<unknown> {
+        // Wait for the bundle index; in bundle mode the load below is then
+        // served from memory by the BundleLoadParser instead of the network.
+        await bundleReady;
         await this.preloadData;
         return PIXI.Assets.load(url);
     }
@@ -193,29 +204,18 @@ export class GameData implements GameDataInterface {
 
     private addSoundGettable() {
         const dataPrefix = this.getDataPrefix(NovaDataType.SoundFile);
-        return new Gettable<sound.Sound>(async (id) => {
+        return new Gettable<sound.Sound>(async (id, priority) => {
             const soundPath = urlJoin(dataPrefix, id) + '.mp3';
-            return new Promise((fulfill, reject) => {
-                sound.Sound.from({
-                    url: soundPath,
-                    preload: true,
-                    loaded: (err, sound) => {
-                        if (err || !sound) {
-                            reject(err);
-                            return;
-                        }
-                        fulfill(sound);
-                    }
-                });
-            })
+            // Through getUrl so the bundle parser materializes the Sound from
+            // memory; in fallback mode @pixi/sound's own Assets parser loads
+            // it from the network.
+            return (await this.getUrl(soundPath, priority)) as sound.Sound;
         });
     }
 
     private async getIds(): Promise<NovaIDs> {
-        return (await fetch(idsPath + ".json")).json() as unknown as NovaIDs;
-        //const res = await ((await this.getUrl(idsPath + ".json")) as unknown) as NovaIDs;
-
-        //return res;
-        //return JSON.parse(idsBuffer.toString('utf8'));
+        // Bundle-served when present (see preload), plain fetch otherwise.
+        await bundleReady;
+        return (await PIXI.Assets.load<NovaIDs>(idsPath + ".json"));
     }
 }

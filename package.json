@@ -67,6 +67,7 @@
         "build:site": "npm run build:browser && npm run generate:static && cp nova/src/index.html dist-site/index.html && cp nova/src/browser_bundle.js nova/src/browser_bundle.js.map dist-site/",
         "generate:static": "esbuild --bundle --platform=node --tsconfig=tsconfig.json scripts/generate_static.ts --outfile=scripts/generate_static_bundle.js && node scripts/generate_static_bundle.js",
         "test": "bazelisk test //...",
+        "test:headless": "node scripts/test_headless.js",
         "test-watch": "ibazel test //...",
         "test-only": "ibazel test",
         "test-brk": "ibazel test --test_arg=--node_options=--inspect-brk --test_output=streamed --test_timeout=9999 --nocache_test_results",
