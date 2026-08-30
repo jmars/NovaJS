@@ -22,6 +22,7 @@ import { System } from "nova_ecs/system";
 import { World } from "nova_ecs/world";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import { govtsAreEnemies } from "../player/legal_status";
+import { PlayerStateResource } from "../player/player_state_component";
 import { DamagedEvent } from "./death_plugin";
 import { FollowAI, GovernmentComponent, ShootAllWeaponsAI } from "./npc_plugin";
 import { PlayerShipSelector } from "./player_ship_plugin";
@@ -93,11 +94,14 @@ function isArrived(movement: MovementState, entities: EntityMap): boolean {
         < ARRIVAL_DISTANCE;
 }
 
-// Warships (3) acquire enemy-govt ships inside the Aggress radius and
-// settle for the player; interceptors (4) prefer the player. Outside the
-// radius they wander like traders. The MissionEnv (govt graph) is the
-// same resource legal_status uses, so it may be absent. (Exported because
-// pers_plugin's grudge targeting must run after it.)
+// Warships (3) acquire enemy-govt ships inside the Aggress radius;
+// interceptors (4) prefer the player. Neither attacks a neutral player on
+// sight: the player only counts as a target once the NPC's government
+// considers them a criminal (legalRecord below -crimeTol, the same
+// hostility test smuggling's scan gate uses). Outside the radius they
+// wander like traders. The MissionEnv (govt graph) is the same resource
+// legal_status uses, so it may be absent. (Exported because pers_plugin's
+// grudge targeting must run after it.)
 export const AggroRangeSystem = new System({
     name: 'AggroRange',
     args: [AIConfigComponent, TargetComponent, MovementStateComponent, UUID,
@@ -145,11 +149,27 @@ export const AggroRangeSystem = new System({
             && candidateMovement.position.subtract(movement.position)
                 .lengthSquared <= radiusSquared);
 
+        // The player is only a fallback target when genuinely hostile to
+        // the NPC's government (legalRecord < -crimeTol, mirroring
+        // smuggling.ts's scan gate). An NPC with no government, or a
+        // government the env can't resolve, never auto-targets the player.
+        let hostilePlayer: string | undefined;
+        if (player !== undefined && playerInRange && govt?.id) {
+            const env = world.resources.get(MissionEnvResource);
+            const npcGovt = env?.government(govt.id);
+            const playerState = world.resources.get(PlayerStateResource);
+            if (npcGovt && playerState
+                && (playerState.legalRecord[npcGovt.id] ?? 0)
+                    < -npcGovt.crimeTol) {
+                hostilePlayer = player;
+            }
+        }
+
         // Interceptors go for the player first; warships prefer enemy ships.
         if (config.aiType === 4) {
-            target.target = playerInRange ? player : enemy;
+            target.target = hostilePlayer ?? enemy;
         } else {
-            target.target = enemy ?? (playerInRange ? player : undefined);
+            target.target = enemy ?? hostilePlayer;
         }
     },
 });

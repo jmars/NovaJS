@@ -15,12 +15,14 @@ import { Entity } from "nova_ecs/entity";
 import { MovementStateComponent } from "nova_ecs/plugins/movement_plugin";
 import { TimeResource } from "nova_ecs/plugins/time_plugin";
 import { World } from "nova_ecs/world";
+import { MissionEnv } from "../missions/mission_state_machine";
 import { MissionEnvResource } from "../missions/mission_plugin";
-import { makeTestEnv } from "../missions/test_fixtures";
+import { makePlayerState, makeTestEnv } from "../missions/test_fixtures";
 import { BoardingProfileComponent, makeDudeShip } from "./dude";
 import { DamagedEvent } from "./death_plugin";
 import { AIConfigComponent, AIStateComponent, NpcAIPlugin } from "./npc_ai_plugin";
 import { GovernmentComponent } from "./npc_plugin";
+import { PlayerStateResource } from "../player/player_state_component";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { PlanetComponent } from "./planet_plugin";
 import { makeShip } from "./make_ship";
@@ -50,12 +52,13 @@ const TRADER_DUDE: DudeData = {
 
 const TIME = { time: 1_000_000, delta_s: 0, delta_ms: 0, frame: 0 };
 
-function makeWorld(): World {
+function makeWorld(envOverrides: Partial<MissionEnv> = {}): World {
     const gameData = new MockGameData();
     gameData.data.Ship.map.set(SHIP_ID, SHIP);
     const world = new World();
     world.resources.set(TimeResource, { ...TIME });
-    world.resources.set(MissionEnvResource, makeTestEnv().env);
+    world.resources.set(MissionEnvResource,
+        { ...makeTestEnv().env, ...envOverrides });
     world.addPlugin(NpcAIPlugin);
     return world;
 }
@@ -81,8 +84,9 @@ function makePlanetEntity(id: string, x: number, y: number): Entity {
     return planet;
 }
 
-function makeAiShip(dude: DudeData, position: [number, number]): Entity {
-    const ship = makeDudeShip(dude, SHIP);
+function makeAiShip(dude: DudeData, position: [number, number],
+    govtId: string | null = dude.govt): Entity {
+    const ship = makeDudeShip(dude, SHIP, govtId);
     ship.components.set(TargetComponent, { target: undefined });
     ship.components.get(MovementStateComponent)!.position =
         new Position(position[0], position[1]);
@@ -204,16 +208,92 @@ describe("düde AIType behaviors", () => {
         expect(movement.accelerating).toEqual(0);
     });
 
-    it("interceptor inside the aggress range targets the player", () => {
+    it("interceptor inside the aggress range targets a hostile player",
+        () => {
+            const world = makeWorld();
+            const state = makePlayerState();
+            state.legalRecord["nova:130"] = -1; // Polaris, crimeTol 0
+            world.resources.set(PlayerStateResource, state);
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+            const player = addEntity(world, "player",
+                makePlayerShip([2000, 0])); // aggress 2 -> radius 3000
+            world.step();
+
+            expect(npc.components.get(TargetComponent)!.target)
+                .toEqual(player.uuid);
+        });
+
+    it("interceptors leave a neutral player alone", () => {
         const world = makeWorld();
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
         const player = addEntity(world, "player",
-            makePlayerShip([2000, 0])); // aggress 2 -> radius 3000
+            makePlayerShip([2000, 0])); // inside radius 3000
         world.step();
 
-        expect(npc.components.get(TargetComponent)!.target)
-            .toEqual(player.uuid);
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+    });
+
+    it("warship inside the aggress radius does not target a neutral player",
+        () => {
+            const world = makeWorld();
+            const state = makePlayerState(); // empty legal record
+            world.resources.set(PlayerStateResource, state);
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            const player = addEntity(world, "player",
+                makePlayerShip([100, 0])); // well inside radius 3000
+            world.step();
+
+            expect(npc.components.get(TargetComponent)!.target)
+                .toBeUndefined();
+            expect(player.components.get(TargetComponent)!.target)
+                .toBeUndefined();
+        });
+
+    it("warship targets the player once the record drops below -crimeTol",
+        () => {
+            // Give the NPC's government a real tolerance so the test
+            // exercises the < -crimeTol comparison, not just < 0.
+            const base = makeTestEnv();
+            const polaris = { ...base.env.government("nova:130")!,
+                crimeTol: 25 };
+            const world = makeWorld({
+                government: id => id === "nova:130"
+                    ? polaris : base.env.government(id),
+            });
+            const state = makePlayerState();
+            state.legalRecord["nova:130"] = -20; // not yet hostile
+            world.resources.set(PlayerStateResource, state);
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            const player = addEntity(world, "player",
+                makePlayerShip([100, 0]));
+            world.step();
+            expect(npc.components.get(TargetComponent)!.target)
+                .toBeUndefined();
+
+            state.legalRecord["nova:130"] = -30; // below -crimeTol 25
+            world.step();
+            expect(npc.components.get(TargetComponent)!.target)
+                .toEqual(player.uuid);
+        });
+
+    it("a governmentless ship never auto-targets the player", () => {
+        const world = makeWorld();
+        const state = makePlayerState();
+        // Hostile toward every government — irrelevant: with no govt id of
+        // its own the NPC cannot be hostile to anyone.
+        state.legalRecord["nova:130"] = -100;
+        world.resources.set(PlayerStateResource, state);
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0], null));
+        addEntity(world, "player", makePlayerShip([100, 0]));
+        world.step();
+
+        expect(npc.components.get(GovernmentComponent)).toBeUndefined();
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
     });
 
     it("warship prefers an enemy-govt ship over the player", () => {
