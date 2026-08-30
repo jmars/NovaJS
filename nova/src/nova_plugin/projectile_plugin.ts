@@ -1,5 +1,5 @@
 import { ProjectileWeaponData, WeaponData } from 'novadatainterface/WeaponData';
-import { Emit, EmitNow, Entities, GetEntity, GetWorld, RunQueryFunction, UUID } from 'nova_ecs/arg_types';
+import { Emit, EmitNow, Entities, GetEntity, RunQueryFunction, UUID } from 'nova_ecs/arg_types';
 import { Angle } from 'nova_ecs/datatypes/angle';
 import { Position } from 'nova_ecs/datatypes/position';
 import { Vector } from 'nova_ecs/datatypes/vector';
@@ -24,8 +24,6 @@ import { FireSubs, OwnerComponent, SourceComponent, SubCounts, VulnerableToPD, W
 import { GameDataResource } from './game_data_resource';
 import { firstOrderWithFallback, Guidance, GuidanceComponent } from './guidance';
 import { ArmorComponent, ShieldComponent } from './health_plugin';
-import { damagerMayDamagePlayer } from './player_hostility';
-import { PlayerShipSelector } from './player_ship_plugin';
 import { ProjectileBlastHull, ProjectileComponent, ProjectileDataComponent } from './projectile_data';
 import { ReturnToQueueComponent } from './return_to_queue_plugin';
 import { SoundEvent } from './sound_event';
@@ -239,16 +237,20 @@ const ProjectileCollisionSystem = new System({
     name: 'ProjectileCollisionSystem',
     events: [CollisionEvent],
     args: [CollisionEvent, Entities, UUID, ProjectileDataComponent,
-        Optional(OwnerComponent), FireSubs, TimeResource, CreateTime, EmitNow,
-        GetWorld] as const,
+        Optional(OwnerComponent), FireSubs, TimeResource, CreateTime, EmitNow] as const,
     step(collision, entities, uuid, projectileData, owner, fireSubs, time,
-        createTime, emitNow, world) {
+        createTime, emitNow) {
         const other = entities.get(collision.other);
         if (!other) {
             return;
         }
         const otherOwner = other.components.get(OwnerComponent);
-        if (collision.other === owner?.owner || otherOwner?.owner === owner?.owner) {
+        // Friendly-fire skip only when an actual owner exists to compare:
+        // an ownerless projectile (e.g. from a destroyed ship) must still
+        // hit an ownerless target, like the real game (undefined would
+        // otherwise equal undefined and skip damage).
+        if (owner?.owner !== undefined
+            && (collision.other === owner.owner || otherOwner?.owner === owner.owner)) {
             return;
         }
 
@@ -263,14 +265,7 @@ const ProjectileCollisionSystem = new System({
             return;
         }
 
-        // Stray fire must not hurt a neutral player: only damage from a
-        // ship whose government considers the player hostile is emitted
-        // (player_hostility.ts). The projectile's own detonation and
-        // lifecycle continue either way.
-        if (!other.components.has(PlayerShipSelector)
-            || damagerMayDamagePlayer(world, entities, owner?.owner)) {
-            emitNow(DamagedEvent, { damage: projectileData.damage, damager: uuid }, [collision.other]);
-        }
+        emitNow(DamagedEvent, { damage: projectileData.damage, damager: uuid }, [collision.other]);
 
         if (!collision.initiator) {
             // We are hit by point defense

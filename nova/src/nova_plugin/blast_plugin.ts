@@ -1,5 +1,5 @@
 import { WeaponDamage } from 'novadatainterface/WeaponData';
-import { Emit, EmitNow, Entities, GetWorld, UUID } from 'nova_ecs/arg_types';
+import { Emit, EmitNow, Entities, UUID } from 'nova_ecs/arg_types';
 import { Component } from 'nova_ecs/component';
 import { Optional } from 'nova_ecs/optional';
 import { Plugin } from 'nova_ecs/plugin';
@@ -9,8 +9,6 @@ import { CollisionSystem } from './collisions_plugin';
 import { CollisionEvent } from './collision_interaction';
 import { DamagedEvent } from './death_plugin';
 import { OwnerComponent } from './fire_weapon_plugin';
-import { damagerMayDamagePlayer } from './player_hostility';
-import { PlayerShipSelector } from './player_ship_plugin';
 
 
 // Damage done by a blast.
@@ -25,19 +23,14 @@ const BlastCollisionSystem = new System({
     events: [CollisionEvent],
     args: [CollisionEvent, BlastDamageComponent,
         Optional(BlastIgnoreComponent), Optional(OwnerComponent), EmitNow,
-        UUID, Entities, GetWorld] as const,
-    step(collision, damage, ignore, owner, emitNow, uuid, entities, world) {
+        UUID, Entities] as const,
+    step(collision, damage, ignore, owner, emitNow, uuid) {
         if (ignore?.has(collision.other)) {
             return;
         }
-        // Blast splash must not hurt a neutral player unless the firing
-        // ship's government considers them hostile (player_hostility.ts;
-        // blasts carry the projectile's OwnerComponent, copied by
+        // Blast splash hurts whoever is in range, including a neutral
+        // player (blasts carry the projectile's OwnerComponent, copied by
         // ProjectileBlastSystem).
-        if (entities.get(collision.other)?.components.has(PlayerShipSelector)
-            && !damagerMayDamagePlayer(world, entities, owner?.owner)) {
-            return;
-        }
         emitNow(DamagedEvent, { damage, damager: uuid }, [collision.other])
     }
 });

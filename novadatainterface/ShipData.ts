@@ -26,6 +26,9 @@ export interface ShipData extends SpaceObjectData {
     deathDelay: number;
     displayWeight: number;
     inherentAI: number;                   // raw shïp AI field: 0 none, 1 wimpy trader .. 4 interceptor
+    inherentGovt: string | null;          // inherent COMBAT govt (global gövt id), decoded from the
+                                          // band-encoded shïp govt field (see ShipParse); null when
+                                          // the ship has no combat govt and so is nobody's inherent enemy
     crew: number;                         // raw shïp crew: the boarding/capture defense
     onCapture: string;                    // shïp OnCapture set-expr, run when the ship is captured
     upgradeTo: string | null;             // global shïp id this ship upgrades to at a planet, null = none
@@ -48,6 +51,7 @@ export function getDefaultShipData(): ShipData {
         deathDelay: 1,
         displayWeight: 1,
         inherentAI: 0,
+        inherentGovt: null,
         crew: 0,
         onCapture: "",
         upgradeTo: null,

@@ -140,8 +140,13 @@ export class CommDialog extends Menu<boolean> {
         if (graphic < 128) {
             return;
         }
-        this.pictContainer.addChild(
-            await this.gameData.spriteFromPictAsync(`nova:${graphic}`));
+        // A missing pict renders blank (pre-lazy-load behavior) instead of
+        // rejecting showComm and freezing the dialog.
+        try {
+            this.pictContainer.addChild(
+                await this.gameData.spriteFromPictAsync(`nova:${graphic}`));
+        }
+        catch { }
     }
 }
 

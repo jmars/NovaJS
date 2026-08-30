@@ -1,9 +1,11 @@
-// Headless World specs for the neutral-player damage gate: stray and
-// splash fire from NPC fights (projectiles, blasts, beams) cannot hurt a
-// player that no government considers hostile, while a genuinely hostile
-// player is damaged as usual and NPC victims always are. The worlds here
-// emit CollisionEvents directly (the collision pipeline is not under
-// test — the DamagedEvent gate is). Run with:
+// Headless World specs for neutral-player stray-fire damage: projectiles,
+// blasts and beams from NPC fights hurt a neutral player exactly like any
+// other ship (real EV Nova: NPCs never deliberately target a neutral
+// player — that is gated separately on playerIsHostile in AggroRange /
+// ChooseRandomTarget, pinned by npc_ai_test.ts — but their stray and
+// splash fire still damages them). The worlds here emit CollisionEvents
+// directly (the collision pipeline is not under test — the DamagedEvent
+// emission is). Run with:
 //   npx esbuild --bundle --platform=node \
 //       nova/src/nova_plugin/neutral_player_gate_test.ts \
 //       --outfile=/tmp/neutral_gate_test.js \
@@ -100,7 +102,7 @@ function addFighter(world: World, name: string,
 }
 
 // A weapon platform whose shots are attributed to `govtId` (null = a
-// government-less ship, whose fire the gate cannot attribute).
+// government-less ship).
 function addShooter(world: World, govtId: string | null): Entity {
     const ship = new Entity(`shooter ${world.entities.size}`);
     ship.components.set(GovernmentComponent, { id: govtId });
@@ -167,84 +169,89 @@ function makeHostileState(): PlayerState {
     return state;
 }
 
-describe("neutral player damage gate", () => {
-    it("stray projectiles cannot hurt a neutral player", () => {
+describe("neutral player stray-fire damage", () => {
+    it("stray projectiles hurt a neutral player", () => {
         const world = makeGateWorld(makeNeutralState());
         const player = addFighter(world, "player", true);
-
-        // No owner at all.
-        collide(world, addProjectile(world), player);
-        expect(shieldOf(player).current).toEqual(100);
-        expect(armorOf(player).current).toEqual(100);
 
         // Owner whose government is not hostile to the player.
         const friendly = addShooter(world, FEDERATION_ID);
         collide(world, addProjectile(world, friendly), player);
-        expect(shieldOf(player).current).toEqual(100);
+        expect(shieldOf(player).current).toEqual(90);
         expect(armorOf(player).current).toEqual(100);
 
-        // Owner without any government.
+        // Owner without any government: the shot still lands.
         const govtLess = addShooter(world, null);
         collide(world, addProjectile(world, govtLess), player);
-        expect(shieldOf(player).current).toEqual(100);
-        expect(armorOf(player).current).toEqual(100);
+        expect(shieldOf(player).current).toEqual(80);
     });
 
-    it("blast splash cannot hurt a neutral player, with or without owner", () => {
+    it("blast splash hurts a neutral player, with or without owner", () => {
         const world = makeGateWorld(makeNeutralState());
         const player = addFighter(world, "player", true);
 
         collide(world, addBlast(world), player);
-        expect(shieldOf(player).current).toEqual(100);
-        expect(armorOf(player).current).toEqual(100);
+        expect(shieldOf(player).current).toEqual(90);
 
         const friendly = addShooter(world, FEDERATION_ID);
         collide(world, addBlast(world, friendly), player);
-        expect(shieldOf(player).current).toEqual(100);
-        expect(armorOf(player).current).toEqual(100);
+        expect(shieldOf(player).current).toEqual(80);
     });
 
-    it("stray beams cannot hurt a neutral player", () => {
+    it("stray beams hurt a neutral player", () => {
         const world = makeGateWorld(makeNeutralState());
         const player = addFighter(world, "player", true);
         const friendly = addShooter(world, FEDERATION_ID);
 
         collide(world, addBeam(world, friendly), player);
-        expect(shieldOf(player).current).toEqual(100);
-        expect(armorOf(player).current).toEqual(100);
+        const afterFirst = shieldOf(player).current;
+        expect(afterFirst).toBeLessThan(100);
 
-        collide(world, addBeam(world), player);
-        expect(shieldOf(player).current).toEqual(100);
-        expect(armorOf(player).current).toEqual(100);
+        const govtLess = addShooter(world, null);
+        collide(world, addBeam(world, govtLess), player);
+        expect(shieldOf(player).current).toBeLessThan(afterFirst);
     });
 
-    it("a hostile government's fire still hurts the player", () => {
-        // Projectile: the shooter's government considers the player a
-        // criminal, so the gate lets the damage through.
+    it("a criminal-record player's fire damage still lands", () => {
+        // A player a government considers hostile is targeted AND damaged;
+        // here only the damage half is under test (targeting is pinned in
+        // npc_ai_test.ts).
         const projectileWorld = makeGateWorld(makeHostileState());
         const player = addFighter(projectileWorld, "player", true);
         const hostile = addShooter(projectileWorld, POLARIS_ID);
         collide(projectileWorld, addProjectile(projectileWorld, hostile),
             player);
         expect(shieldOf(player).current).toEqual(90);
-        expect(armorOf(player).current).toEqual(100);
 
         // Blast from the same shooter: splash gets through too.
         collide(projectileWorld, addBlast(projectileWorld, hostile), player);
         expect(shieldOf(player).current).toEqual(80);
     });
 
-    it("NPCs still take the stray fire", () => {
+    it("NPCs take the same stray fire", () => {
         const world = makeGateWorld(makeNeutralState());
         const npc = addFighter(world, "npc", false);
 
-        // Government-attributed fire that the gate suppresses for a
-        // neutral player still damages NPC victims.
         const friendly = addShooter(world, FEDERATION_ID);
         collide(world, addProjectile(world, friendly), npc);
         expect(shieldOf(npc).current).toEqual(90);
 
         collide(world, addBlast(world, friendly), npc);
         expect(shieldOf(npc).current).toEqual(80);
+    });
+
+    it("ownerless fire hits an ownerless target", () => {
+        // A projectile/beam with no owner (e.g. from a ship destroyed mid-
+        // flight) must still damage an ownerless target. Before the fix,
+        // the friendly-fire check compared two undefined owners, which
+        // equal each other, and silently skipped the damage.
+        const world = makeGateWorld(makeNeutralState());
+        const npc = addFighter(world, "npc", false);
+
+        collide(world, addProjectile(world), npc);
+        expect(shieldOf(npc).current).toEqual(90);
+
+        collide(world, addBeam(world), npc);
+        expect(shieldOf(npc).current).toBeLessThan(90);
     });
 });

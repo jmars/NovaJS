@@ -67,6 +67,17 @@ export class ItemTile<I extends Item> {
     }
 
     private async buildAsync() {
+        // Fire-and-forget: a missing pict (many outfits carry the "default"
+        // placeholder) leaves the tile blank instead of rejecting an
+        // unawaited promise.
+        try {
+            await this.buildPict();
+        }
+        catch { }
+        this.built = true;
+    }
+
+    private async buildPict() {
         if (this.item.pict) {
             const [smallPict, largePict] = await Promise.all([
                 this.gameData.spriteFromPictAsync(this.item.pict),
@@ -83,7 +94,6 @@ export class ItemTile<I extends Item> {
 
             this.container.addChildAt(smallPict, 1);
         }
-        this.built = true;
     }
 
     draw() {

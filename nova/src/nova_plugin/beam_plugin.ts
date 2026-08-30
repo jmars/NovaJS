@@ -1,5 +1,5 @@
 import { BeamWeaponData, WeaponData } from 'novadatainterface/WeaponData';
-import { EmitNow, Entities, GetWorld, RunQueryFunction, UUID } from 'nova_ecs/arg_types';
+import { EmitNow, Entities, RunQueryFunction, UUID } from 'nova_ecs/arg_types';
 import { Component } from 'nova_ecs/component';
 import { Angle } from 'nova_ecs/datatypes/angle';
 import { Position } from 'nova_ecs/datatypes/position';
@@ -20,8 +20,6 @@ import { DamagedEvent } from './death_plugin';
 import { applyExitPoint, ExitPointData } from './exit_point';
 import { FireSubs, OwnerComponent, sampleInaccuracy, SourceComponent, WeaponConstructors, WeaponEntry } from './fire_weapon_plugin';
 import { zeroOrderGuidance } from './guidance';
-import { damagerMayDamagePlayer } from './player_hostility';
-import { PlayerShipSelector } from './player_ship_plugin';
 import { SoundEvent } from './sound_event';
 import { TargetComponent } from './target_component';
 import { WeaponsSystem } from './weapon_plugin';
@@ -166,28 +164,26 @@ const BeamCollisionSystem = new System({
     name: 'BeamCollisionSystem',
     events: [CollisionEvent],
     args: [CollisionEvent, Entities, Optional(OwnerComponent),
-        BeamDataComponent, CreateTime, EmitNow, TimeResource, UUID,
-        GetWorld] as const,
+        BeamDataComponent, CreateTime, EmitNow, TimeResource, UUID] as const,
     step(collision, entities, owner, beamData, fireTime, emitNow,
-        { time, delta_ms }, uuid, world) {
+        { time, delta_ms }, uuid) {
 
         const other = entities.get(collision.other);
         if (!other) {
             return;
         }
         const otherOwner = other.components.get(OwnerComponent);
-        if (collision.other === owner?.owner || otherOwner?.owner === owner?.owner) {
+        // Friendly-fire skip only when an actual owner exists to compare:
+        // an ownerless beam must still hit an ownerless target (undefined
+        // would otherwise equal undefined and skip damage).
+        if (owner?.owner !== undefined
+            && (collision.other === owner.owner || otherOwner?.owner === owner.owner)) {
             return;
         }
 
-        // Stray beams must not hurt a neutral player: only damage from a
-        // ship whose government considers the player hostile is emitted
-        // (player_hostility.ts).
-        if (other.components.has(PlayerShipSelector)
-            && !damagerMayDamagePlayer(world, entities, owner?.owner)) {
-            return;
-        }
-
+        // Stray beams hurt whoever they hit, including a neutral player
+        // (real EV Nova: NPCs do not target a neutral player, but their
+        // stray fire still damages them).
         const timeSinceFire = time - fireTime;
         const lastTimeSinceFire = timeSinceFire - delta_ms;
         const damageTime = Math.min(delta_ms, beamData.shotDuration - lastTimeSinceFire);

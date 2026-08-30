@@ -23,6 +23,26 @@ export function ShipParseClosure(shipPictMap: ShipPictMap,
 
 }
 
+// The band-encoded shïp govt field (raw offset 72, the value the binary's
+// ambient flët spawn reads to govt its ships). Per the EV Nova Bible, the
+// bands decide which halves of the govt the ship inherits:
+//   -1         no inherent combat or attributes govt
+//   128-383    inherent govt, combat AND attributes
+//   1128-1383  attributes govt (minus 1000) only — NO combat govt
+//   2128-2383  combat govt (minus 2000) only
+// The combat half is what AI like/hate checks key off, so that is what the
+// port surfaces: most stock warship classes (Fed patrol boats, all pirate
+// and Auroran warships) are attr-only, i.e. inherently hostile to nobody.
+export function inherentCombatGovt(raw: number): string | null {
+    if (raw >= 128 && raw <= 383) {
+        return String(raw);
+    }
+    if (raw >= 2128 && raw <= 2383) {
+        return String(raw - 2000);
+    }
+    return null;
+}
+
 export async function ShipParse(ship: ShipResource,
     notFoundFunction: (message: string) => void,
     shipPictMap: ShipPictMap,
@@ -174,6 +194,17 @@ export async function ShipParse(ship: ShipResource,
         freeMass += outfit.mass * outfits[outfitID];
     }
 
+    var inherentGovt: string | null = null;
+    if (inherentCombatGovt(ship.inherentGovt) !== null) {
+        let govtResource = ship.idSpace.gövt[inherentCombatGovt(ship.inherentGovt)!];
+        if (govtResource) {
+            inherentGovt = govtResource.globalID;
+        }
+        else {
+            notFoundFunction("No corresponding gövt of id " + ship.inherentGovt + " for shïp " + base.id);
+        }
+    }
+
     var physics: ShipPhysics = {
         shield: ship.shield,
         shieldRecharge: ship.shieldRecharge * FPS / 1000, // Recharge per second
@@ -204,6 +235,7 @@ export async function ShipParse(ship: ShipResource,
         largeExplosion: ship.deathDelay >= 60,
         displayWeight: ship.id, // TODO: Fix this once displayweight is implemented
         inherentAI: ship.inherentAI,
+        inherentGovt: inherentGovt,
         crew: ship.crew,
         onCapture: ship.onCapture,
         upgradeTo,

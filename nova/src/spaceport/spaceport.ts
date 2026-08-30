@@ -372,10 +372,23 @@ export class Spaceport extends Menu<Entity> {
         desc.position.y = 70;
         this.container.addChild(desc);
 
-        const spaceportPict = await this.gameData.spriteFromPictAsync(data.landingPict)
-        spaceportPict.position.x = -306;
-        spaceportPict.position.y = -256;
-        this.container.addChild(spaceportPict)
+        // 286 stock planets carry the "default" placeholder landingPict,
+        // whose png does not exist. The synchronous Sprite.from of the
+        // pre-lazy-load code rendered that as a blank pict; a rejection
+        // here would kill the whole buildPromise and strand the spaceport
+        // closed (Menu.show awaits it), so tolerate a missing pict.
+        let spaceportPict;
+        try {
+            spaceportPict = await this.gameData.spriteFromPictAsync(data.landingPict);
+        }
+        catch {
+            spaceportPict = undefined;
+        }
+        if (spaceportPict) {
+            spaceportPict.position.x = -306;
+            spaceportPict.position.y = -256;
+            this.container.addChild(spaceportPict);
+        }
         this.container.addChild(this.outfitter.container);
         this.container.addChild(this.shipyard.container);
         this.container.addChild(this.tradeCenter.container);
@@ -513,7 +526,10 @@ export class Spaceport extends Menu<Entity> {
             return;
         }
         // Visible so the briefing shows; the spaceport's own controls stay
-        // unbound until Menu.show runs.
+        // unbound until Menu.show runs. The build must be in place first:
+        // a half-built spaceport has no background and buttons whose click
+        // handlers read this.input (unset until Menu.show).
+        await this.buildPromise;
         this.container.visible = true;
         for (const offer of offers) {
             const labels = await this.briefing!.labelsFor(offer.mission);
