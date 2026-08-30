@@ -8,13 +8,13 @@
 
 import "jasmine";
 import { MockGameData } from "novadatainterface/MockGameData";
-import { getDefaultFleetData } from "novadatainterface/FleetData";
+import { FleetData, getDefaultFleetData } from "novadatainterface/FleetData";
 import { getDefaultStringSetData } from "novadatainterface/StringSetData";
 import { getDefaultShipData } from "novadatainterface/ShipData";
 import { World } from "nova_ecs/world";
 import { GameDataResource } from "./game_data_resource";
 import { SystemIdResource } from "./system_id_resource";
-import { FleetPlugin, FleetQuotesResource } from "./fleet_plugin";
+import { FleetPlugin, FleetQuotesResource, MAX_FLEETS_PER_SYSTEM } from "./fleet_plugin";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import {
     makePlayerState,
@@ -64,10 +64,15 @@ async function flush(): Promise<void> {
 }
 
 // Builds a system world for the given system id and runs one spawn pass.
-async function makeTestWorld(systemId: string) {
+// `fleets` replaces the default single-fleet fixture (each spawns its lead
+// ship only, so one fleet-ship entity per spawned flët).
+async function makeTestWorld(systemId: string,
+    fleets?: Array<[string, FleetData]>) {
     const gameData = new MockGameData();
     gameData.data.Ship.map.set(SHIP_ID, SHIP);
-    gameData.data.Fleet.map.set(FLEET_ID, FLEET);
+    for (const [id, fleet] of fleets ?? [[FLEET_ID, FLEET]]) {
+        gameData.data.Fleet.map.set(id, fleet);
+    }
     gameData.data.StringSet.map.set(QUOTE_STR, {
         ...getDefaultStringSetData(),
         id: QUOTE_STR,
@@ -109,6 +114,33 @@ describe("fleet spawn atmosphere gate", () => {
     it("spawns in a system with an inhabited planet", async () => {
         const { fleetShips } = await makeTestWorld(INHABITED_SYSTEM);
         expect(fleetShips()).toEqual([`fleet-ship ${FLEET_ID} 0`]);
+    });
+});
+
+describe("fleet bounded seeded-random subset", () => {
+    // Ten matching flëts (linkSyst -1, no ActivateOn): more than the cap.
+    const MANY = 10;
+    const manyFleets: Array<[string, FleetData]> = [];
+    for (let i = 0; i < MANY; i++) {
+        const id = `nova:${910 + i}`;
+        manyFleets.push([id, {
+            ...getDefaultFleetData(),
+            id,
+            name: `Fleet ${i}`,
+            leadShipType: SHIP_ID,
+        }]);
+    }
+
+    it("spawns only a bounded subset when many flëts match", async () => {
+        const { fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
+            manyFleets);
+        expect(fleetShips().length).toEqual(MAX_FLEETS_PER_SYSTEM);
+    });
+
+    it("picks the same subset for the same pilot state", async () => {
+        const first = await makeTestWorld(INHABITED_SYSTEM, manyFleets);
+        const second = await makeTestWorld(INHABITED_SYSTEM, manyFleets);
+        expect(first.fleetShips()).toEqual(second.fleetShips());
     });
 });
 

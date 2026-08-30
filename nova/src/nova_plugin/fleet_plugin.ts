@@ -73,6 +73,10 @@ const SpawnFleetsSystem = new AsyncSystem({
         const systemRawId = rawIdOf(systemId);
         const quotes: string[] = [];
 
+        // First collect every matching flët, then spawn only a bounded
+        // seeded-random subset of them (EV Nova throws a few flëts at a
+        // system, not every one that matches).
+        const matching: Array<{ fleetId: string; fleet: FleetData }> = [];
         for (const fleetId of ids.Fleet) {
             let fleet: FleetData;
             try {
@@ -81,9 +85,13 @@ const SpawnFleetsSystem = new AsyncSystem({
             catch {
                 continue;
             }
-            if (!fleetActive(fleet, state, systemId, systemData, env)) {
-                continue;
+            if (fleetActive(fleet, state, systemId, systemData, env)) {
+                matching.push({ fleetId, fleet });
             }
+        }
+
+        for (const { fleetId, fleet } of chooseFleets(matching,
+            makeRng(systemFleetSeed(state, systemRawId)))) {
             const rng = makeRng(fleetSpawnSeed(state, rawIdOf(fleetId), systemRawId));
             quotes.push(...await spawnFleet(gameData, env, entities, fleet, rng));
         }
@@ -205,6 +213,33 @@ function fleetSpawnSeed(state: PlayerState, fleetRawId: number,
     const dayCount = year * 365 + month * 40 + day;
     return (state.rngSeed ^ (fleetRawId * 0x9E37) ^ (systemRawId * 0x85EB)
         ^ (dayCount * 0xC2B2AE35)) >>> 0;
+}
+
+// How many matching flëts a single system entry may spawn at most. Stock
+// data has over a hundred flëts, most matching any system — without the cap
+// every entry drops hundreds of ships on the player.
+export const MAX_FLEETS_PER_SYSTEM = 3;
+
+// The subset pick's seed: per system entry (pilot, system, date), with no
+// per-flët term, so the same system on the same date always yields the same
+// subset.
+function systemFleetSeed(state: PlayerState, systemRawId: number): number {
+    const { day, month, year } = state.date;
+    const dayCount = year * 365 + month * 40 + day;
+    return (state.rngSeed ^ (systemRawId * 0x85EB)
+        ^ (dayCount * 0xC2B2AE35)) >>> 0;
+}
+
+// Seeded Fisher-Yates over a copy, then the cap. The stream order (ids.Fleet
+// is data-order) and seed are both stable, so the pick is deterministic
+// across reloads and peers.
+function chooseFleets<T>(fleets: T[], rng: () => number): T[] {
+    const pool = [...fleets];
+    for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [pool[i], pool[j]] = [pool[j]!, pool[i]!];
+    }
+    return pool.slice(0, MAX_FLEETS_PER_SYSTEM);
 }
 
 export const FleetPlugin: Plugin = {
