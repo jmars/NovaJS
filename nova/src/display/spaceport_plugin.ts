@@ -94,7 +94,7 @@ const LandSystem = new System({
         spaceport.container.position.y = y / 2;
         // AvailLoc-3 (main spaceport) offers auto-popup before the spaceport
         // menu becomes interactive; then the menu runs to departure.
-        spaceport.showLandingOffers()
+        spaceport.showLandingOffers(playerShip)
             .then(() => spaceport.show(playerShip))
             .then(newShip => {
                 // Capture outfitter/shipyard/trade changes into the pilot's

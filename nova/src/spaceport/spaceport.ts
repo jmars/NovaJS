@@ -461,14 +461,17 @@ export class Spaceport extends Menu<Entity> {
 
     // Assembles the offer/briefing environment for one interaction,
     // re-resolving the ship's name/type (the ship may have changed).
-    private async missionUi(): Promise<MissionUiEnv> {
+    // `ship` is the player's ship entity; landing offers pass it explicitly
+    // because this.input is only set once Menu.show runs.
+    private async missionUi(ship?: Entity): Promise<MissionUiEnv> {
         if (!this.missions || !this.textEnv) {
             throw new Error('Spaceport has no mission state');
         }
+        const shipEntity = ship ?? this.input;
         let shipName = "";
         let shipTypeName = "";
         let shipData: ShipData | null = null;
-        const shipId = this.input.components.get(ShipComponent)?.id;
+        const shipId = shipEntity?.components.get(ShipComponent)?.id;
         if (shipId) {
             try {
                 shipData = await this.gameData.data.Ship.get(shipId);
@@ -492,17 +495,19 @@ export class Spaceport extends Menu<Entity> {
             // Feeds the AvailShipType / AI-flag availability rules.
             shipInherentAI: shipData?.inherentAI ?? null,
             // Free hold space: flags2 0x0001 rule and accept-time pickups.
-            freeCargoTons: shipFreeCargoTons(this.input, this.missions.playerState),
+            freeCargoTons: shipEntity
+                ? shipFreeCargoTons(shipEntity, this.missions.playerState)
+                : null,
         };
     }
 
     // AvailLoc-3 (main spaceport) offers play as auto-popup briefings when
     // the player lands, before the spaceport menu becomes interactive.
-    async showLandingOffers(): Promise<void> {
+    async showLandingOffers(playerShip: Entity): Promise<void> {
         if (!this.missions) {
             return;
         }
-        const ui = await this.missionUi();
+        const ui = await this.missionUi(playerShip);
         const offers = await computeOffers('spaceport', ui);
         if (offers.length === 0) {
             return;

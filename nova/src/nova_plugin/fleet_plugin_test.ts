@@ -1,9 +1,12 @@
-// Headless World specs for the flët spawn draw and hyperspace-entry quote
-// (ported from FUN_00425280/FUN_004259b0): a flët only spawns in a system
-// with at least one inhabited planet, ONE index is drawn into the 256-slot
-// flët table per entry (hit iff the drawn slot is eligible), and the Quote
-// STR# (with '#' replaced by random digits) lands on FleetQuotesResource
-// for a future message surface. Run with:
+// Headless World specs for the flët ambient spawn draw and hyperspace-entry
+// quote (ported from the binary's FUN_0041af90 ambient loop +
+// FUN_00425280/FUN_004259b0): a flët only spawns in a system with at least
+// one inhabited planet, ONE index is drawn into the 256-slot flët table per
+// ambient pass behind FUN_0041af90's rand(7)/rand(7) gates, the passes
+// re-roll while the world steps (not only on arrival), the population is
+// bounded by the binary's 64 ship slots, and the Quote STR# (with '#'
+// replaced by random digits) lands on FleetQuotesResource for a future
+// message surface. Run with:
 //   npx esbuild --bundle --platform=node nova/src/nova_plugin/fleet_plugin_test.ts \
 //       --outfile=/tmp/fleet_plugin_test.js && node_modules/.bin/jasmine /tmp/fleet_plugin_test.js
 
@@ -12,11 +15,17 @@ import { MockGameData } from "novadatainterface/MockGameData";
 import { FleetData, getDefaultFleetData } from "novadatainterface/FleetData";
 import { getDefaultStringSetData } from "novadatainterface/StringSetData";
 import { getDefaultShipData } from "novadatainterface/ShipData";
+import { Entity } from "nova_ecs/entity";
 import { World } from "nova_ecs/world";
 import { randInt, seedRng } from "../player/pilot_files";
 import { GameDataResource } from "./game_data_resource";
 import { SystemIdResource } from "./system_id_resource";
-import { FleetPlugin, FleetQuotesResource } from "./fleet_plugin";
+import {
+    AMBIENT_GATE,
+    FleetPlugin,
+    FleetQuotesResource,
+    MAX_AMBIENT_SHIPS,
+} from "./fleet_plugin";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import {
     makePlayerState,
@@ -65,12 +74,31 @@ async function flush(): Promise<void> {
     }
 }
 
-// Mirrors the plugin's warp-in draw (FUN_00425280: one rand(256) draw per
-// system entry) so the specs can pick state seeds that deterministically
-// land on either side of the draw.
-function spawnHit(seed: number, eligible: number): boolean {
+// Simulates the plugin's per-pass draws (FUN_0041af90's gates: rand(7)
+// missing the përs branch then rand(7) hitting the flët branch, then the
+// FUN_00425280 table draw and the uniform pick on a hit) so the specs can
+// pick state seeds with known multi-pass outcomes. Returns the picked
+// matching index for every hitting pass.
+function fleetPasses(seed: number, eligible: number, passes: number):
+    number[] {
     seedRng(seed);
-    return randInt(0x100) < eligible;
+    const picks: number[] = [];
+    for (let pass = 0; pass < passes; pass++) {
+        if (randInt(AMBIENT_GATE) === 0) {
+            continue; // përs branch (owned by SpawnPersSystem)
+        }
+        if (randInt(AMBIENT_GATE) !== 0) {
+            continue; // dude branch (not ported)
+        }
+        if (randInt(0x100) < eligible) {
+            picks.push(randInt(eligible));
+        }
+    }
+    return picks;
+}
+
+function spawnHit(seed: number, eligible: number): boolean {
+    return fleetPasses(seed, eligible, 1).length > 0;
 }
 
 function findSeed(eligible: number, wantHit: boolean): number {
@@ -82,11 +110,27 @@ function findSeed(eligible: number, wantHit: boolean): number {
     throw new Error("no pilot seed found for the requested draw side");
 }
 
+// A seed whose first four ambient passes (frames 0, 30, 60, 90) hit at
+// least twice on distinct flëts, for the re-roll spec.
+function findMultiHitSeed(eligible: number, passes: number, minUnique: number):
+    number {
+    for (let seed = 1; seed < 200_000; seed++) {
+        const picks = fleetPasses(seed, eligible, passes);
+        if (new Set(picks).size >= minUnique) {
+            return seed;
+        }
+    }
+    throw new Error("no pilot seed found for the requested multi-pass draw");
+}
+
 // Builds a system world for the given system id and runs one spawn pass.
 // `fleets` replaces the default single-fleet fixture (each spawns its lead
-// ship only, so one fleet-ship entity per spawned flët).
+// ship only, so one fleet-ship entity per spawned flët). `preSpawns` adds
+// that many dummy fleet-ship entities before the first step (for the
+// 64-slot bound spec).
 async function makeTestWorld(systemId: string,
-    fleets?: Array<[string, FleetData]>, playerState?: PlayerState) {
+    fleets?: Array<[string, FleetData]>, playerState?: PlayerState,
+    preSpawns = 0) {
     const gameData = new MockGameData();
     gameData.data.Ship.map.set(SHIP_ID, SHIP);
     for (const [id, fleet] of fleets ?? [[FLEET_ID, FLEET]]) {
@@ -108,6 +152,9 @@ async function makeTestWorld(systemId: string,
     world.resources.set(PlayerStateResource, state);
     world.resources.set(MissionEnvResource, env);
     world.addPlugin(FleetPlugin);
+    for (let i = 0; i < preSpawns; i++) {
+        world.entities.set(`fleet-ship dummy ${i}`, new Entity("dummy"));
+    }
     // AsyncSystem applies its immer patches on the run after the async step
     // finishes, so a second world.step() (the game loop's next frame) is
     // what actually lands the spawned entities in the world.
@@ -117,6 +164,14 @@ async function makeTestWorld(systemId: string,
     await flush();
     return {
         world,
+        // Steps the world n more frames, flushing between each (the game
+        // loop's ticker calls world.step() once per frame).
+        stepFrames: async (n: number) => {
+            for (let i = 0; i < n; i++) {
+                world.step();
+                await flush();
+            }
+        },
         fleetShips: () => [...world.entities.keys()].filter(key =>
             key.startsWith("fleet-ship")),
         quotes: () => world.resources.get(FleetQuotesResource) ?? [],
@@ -158,8 +213,8 @@ describe("fleet one-draw spawn model", () => {
         }]);
     }
 
-    it("spawns at most one flët per system entry (one table draw)", async () => {
-        // FUN_00425280 draws ONE slot per call: a hit warps in exactly one
+    it("spawns at most one flët per pass (one table draw)", async () => {
+        // FUN_00425280 draws ONE slot per pass: a hit warps in exactly one
         // whole flët no matter how many are eligible.
         const hit = makePlayerState(findSeed(MANY, true));
         const { fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
@@ -176,6 +231,60 @@ describe("fleet one-draw spawn model", () => {
         const first = await makeTestWorld(INHABITED_SYSTEM, manyFleets, state);
         const second = await makeTestWorld(INHABITED_SYSTEM, manyFleets, state);
         expect(first.fleetShips()).toEqual(second.fleetShips());
+    });
+});
+
+describe("fleet ambient re-roll over time", () => {
+    // Ten matching flëts; ids are nova:910..919 in matching order, so pick
+    // index i is fleet nova:(910 + i) (MockGameData exposes ids in map
+    // insertion order).
+    const MANY = 10;
+    const manyFleets: Array<[string, FleetData]> = [];
+    for (let i = 0; i < MANY; i++) {
+        const id = `nova:${910 + i}`;
+        manyFleets.push([id, {
+            ...getDefaultFleetData(),
+            id,
+            name: `Fleet ${i}`,
+            leadShipType: SHIP_ID,
+        }]);
+    }
+
+    it("re-rolls the draw on later frames and lands the mirrored picks",
+        async () => {
+            // Four passes at frames 0, 30, 60, 90 (makeTestWorld already
+            // ran frames 0 and 1; step 89 more to reach frame 90).
+            const PASSES = 4;
+            const seed = makePlayerState(
+                findMultiHitSeed(MANY, PASSES, 2)).rngSeed;
+            const { fleetShips, stepFrames } = await makeTestWorld(
+                INHABITED_SYSTEM, manyFleets, makePlayerState(seed));
+            expect(fleetShips().length).toEqual(1);
+
+            await stepFrames(89);
+
+            // The engine LCG advances across passes (seeded once per system
+            // entry), so later passes spawn more flëts — exactly the ones
+            // the mirrored draw sequence picks.
+            const picks = fleetPasses(seed, MANY, PASSES);
+            expect(new Set(picks).size).toBeGreaterThanOrEqual(2);
+            const expected = [...new Set(picks)]
+                .map(pick => `fleet-ship nova:${910 + pick} 0`).sort();
+            expect(fleetShips().sort()).toEqual(expected);
+        });
+});
+
+describe("fleet 64-slot bound", () => {
+    it("does not spawn once 64 ambient ships are in the system", async () => {
+        // A seed whose first pass hits: the cap, not the draw, must block
+        // the spawn.
+        const hit = makePlayerState(findSeed(1, true));
+        const { fleetShips, quotes } = await makeTestWorld(INHABITED_SYSTEM,
+            undefined, hit, MAX_AMBIENT_SHIPS);
+        expect(fleetShips().length).toEqual(MAX_AMBIENT_SHIPS);
+        expect(fleetShips().every(key => key.startsWith("fleet-ship dummy")))
+            .toBeTrue();
+        expect(quotes()).toEqual([]);
     });
 });
 
