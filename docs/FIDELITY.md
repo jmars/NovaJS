@@ -40,14 +40,14 @@ audit) instead of after a user reports them.
 
 | Subsystem | Port file | Binary fn(s) | Status | Notes |
 |---|---|---|---|---|
-| Projectile damage | `projectile_plugin.ts` | (collision) | UNKNOWN | friendly-fire + ownerless guard verified |
-| Beam damage | `beam_plugin.ts` | — | UNKNOWN | — |
-| Blast/splash | `blast_plugin.ts` | — | UNKNOWN | — |
+| Projectile damage | `projectile_plugin.ts` | FUN_0042f270 → FUN_004192d0 | APPROXIMATED | owner-skip rules match (shooter itself, shooter's owner, targets owned by shooter; −1/0xffff sentinels ⇒ ownerless still hits); shield→armor order, passThroughShield = flags bit 0x20. Missing in port: friendly no-disable clamp (armor=1.0), shield overshoot floor −maxShield×0.1 |
+| Beam damage | `beam_plugin.ts` | FUN_00437780 / FUN_00437e20 / FUN_00435830 | APPROXIMATED | binary: per-frame hits, damage decays max(0, base − steps), steps +1 per wd[+0x1a] frames per firing; port scales delta_ms*30/1000 (≈1/frame) and never decays ⇒ over-damages sustained beams |
+| Blast/splash | `blast_plugin.ts` | FUN_00435830 (+FUN_00437780) | APPROXIMATED | binary: SQUARE blast range (|dx|,|dy| ≤ radius); only the player (slot 0) takes own blast (NPCs immune unless flag 0x100); projectile blasts double-dip (direct + splash), beam blasts don't. Port: circular hull, uniform self-blast rule, never double-dips |
 | AI targeting (AggroRange) | `npc_ai_plugin.ts` | — | UNKNOWN | playerIsHostile gating verified |
 | Retaliation | `npc_ai_plugin.ts` | — | APPROXIMATED | now gated on govt hostility |
 | NPC random target | `npc_plugin.ts` | — | UNKNOWN | — |
-| Health/shields | `health_plugin.ts` | — | UNKNOWN | — |
-| Ionization | `ionization_plugin.ts` | — | UNKNOWN | — |
+| Health/shields | `health_plugin.ts` | FUN_004192d0, FUN_00463550/4637a0 | VERIFIED | ship slot: +0x54 shield, +0x58 armor, +0x5c ionization (stride 0xc948 off DAT_005912a0); maxes = shipdata(+0x5c/+0x60) + outfit mod types 4/6 (FUN_00463550/4637a0); both restored to max on landing (FUN_004cb260) |
+| Ionization | `ionization_plugin.ts` | FUN_0046f3f0 | APPROXIMATED | slot+0x5c += weapon ionization (full on direct hit); color flags OR'd at slot+0xb0; splash ionization has circular falloff (port applies full — minor) |
 | Guidance | `guidance.ts` | — | UNKNOWN | — |
 | Combat rating | `combat_rating_plugin.ts` | — | UNKNOWN | — |
 
@@ -89,8 +89,7 @@ when audited.
    approximates ambient population via global fleet/pers + govt gate. Highest
    fidelity gap; needs the real sÿst layout recovered.
 2. **Dude branch FUN_0041ba80** — not ported; owns dude probability-table spawns.
-3. **Combat damage path** (projectile/beam/blast) — never compared; the recent
-   neutral-player + ownerless changes touched it without a binary reference.
+3. ~~**Combat damage path** (projectile/beam/blast)~~ — AUDITED (see combat table): projectile friendly-fire + shield/armor order VERIFIED; beam decay, blast shape/self-blast/double-dip diverge (APPROXIMATED); prox-safety window has no verified binary counterpart.
 4. **AI targeting / retaliation radii** — AGGRESS_RADII inferred from Bible, not
    binary; retaliation now gated but the radius table is unverified.
 5. **Mission availability / stellar filters** — govt-band +127 shift verified
