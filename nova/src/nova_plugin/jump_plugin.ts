@@ -99,6 +99,8 @@ export const MissionJumpStateSystem = new System({
             return;
         }
         playerState.date = advanceDate(playerState.date, 1);
+        // The engine's jump counter (cargo_decay.ts DECAY_PERIOD_DAYS).
+        playerState.dayCount += 1;
         if (!playerState.exploredSystems.includes(to)) {
             playerState.exploredSystems.push(to);
         }
@@ -114,11 +116,12 @@ export const MissionJumpStateSystem = new System({
                 console.info('[missions]', `salary paid: ${paid}`);
             }
             // One jump = one game day of hold decay too (cargo_decay.ts):
-            // tribbles multiply, perishables spoil. Covered by the save
-            // below; headless worlds simply have no log resource.
+            // tribbles grow and perishables spoil, but only on the
+            // engine's every-250th-jump day. Covered by the save below;
+            // headless worlds simply have no log resource.
             const decay = applyCargoDecay(playerState.cargo,
                 type => env.junk?.(type)?.flags,
-                shipFreeCargoTons(entity, playerState));
+                shipFreeCargoTons(entity, playerState), playerState.dayCount);
             if (decay.effects.length > 0) {
                 playerState.cargo = decay.cargo;
                 logDecay(world, decay.effects, env);

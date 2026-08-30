@@ -1,8 +1,8 @@
-// Headless specs for the boarding resolver (P5): booty money within the
-// flagged 10-25%-of-price band, commodity plunder in the mission cargo id
-// space, the repelled path, the govt boarding penalty (with propagation and
-// the own-mission exemption), the përs credits band, and the seeded
-// determinism of the loot rolls. Run with:
+// Headless specs for the boarding resolver (P5): booty money (the engine's
+// 2.5%-of-price base, banded and floored), single-commodity plunder in the
+// mission cargo id space, the repelled path, the govt boarding penalty
+// (with propagation and the own-mission exemption), the përs credits band,
+// and the seeded determinism of the loot rolls. Run with:
 //   npx esbuild --bundle --platform=node nova/src/missions/boarding_test.ts \
 //       --outfile=/tmp/boarding_test.js && node_modules/.bin/jasmine /tmp/boarding_test.js
 
@@ -15,7 +15,7 @@ import {
     boardRng,
     boardSeed,
     BOOTY_MONEY,
-    MAX_BOOTY_TONS,
+    BOOTY_MONEY_FLOOR,
     resolveBoard,
 } from "./boarding";
 import {
@@ -27,8 +27,9 @@ import {
 import { PlayerState } from "../player/player_state";
 import { getDefaultGovernmentData } from "novadatainterface/GovernmentData";
 
+// physics.freeCargo drives the commodity plunder band: [ceil(15/2), 15].
 const SHIP = { ...getDefaultShipData(), id: "nova:600", name: "Loot Barge",
-    price: 10000 };
+    price: 200000, physics: { ...getDefaultShipData().physics, freeCargo: 15 } };
 
 // A govt that fines boarding, with an ally class and an enemy class so the
 // record propagation has someone to propagate to (fixtures: FEDERATION
@@ -78,7 +79,9 @@ describe("boarding resolution", () => {
         GOVERNMENTS.set(BOARDABLE.id, BOARDABLE);
     });
 
-    it("plunders money booty within 10-25% of the ship's price", () => {
+    it("plunders money booty in the engine's 2.5-5% band of the price", () => {
+        // 200000 credits: base = trunc(200000/1000) * 2.5% * 1000 = 5000,
+        // above the 2000 threshold, so the band adds rand(5) * 1000.
         for (let seed = 1; seed <= 25; seed++) {
             const state = makePlayerState();
             const result = board(state, dude(BOOTY_MONEY), null,
@@ -88,33 +91,37 @@ describe("boarding resolution", () => {
             const paid = result.effects.find(e => e.kind === "pay");
             expect(paid).withContext(`seed ${seed}`).toEqual(
                 { kind: "pay", amount: result.creditsDelta! });
-            // The flagged approximation band: 10-25% of 10000 credits.
-            expect(result.creditsDelta!).toBeGreaterThanOrEqual(1000);
-            expect(result.creditsDelta!).toBeLessThanOrEqual(2500);
+            expect(result.creditsDelta!).toBeGreaterThanOrEqual(5000);
+            expect(result.creditsDelta!).toBeLessThanOrEqual(9000);
             expect(state.credits).toEqual(25000 + result.creditsDelta!);
         }
+        // Below the threshold the base is paid straight, floored at 1000.
+        const cheap = { ...SHIP, price: 10000 };
+        const state = makePlayerState();
+        const { env } = makeTestEnv();
+        const result = resolveBoard(state, NO_MISSION, cheap, dude(BOOTY_MONEY),
+            null, env, makeRngFor(7));
+        expect(result.creditsDelta!).toEqual(BOOTY_MONEY_FLOOR);
     });
 
-    it("plunders one commodity per booty bit, in the mission cargo id space",
-        () => {
-            const state = makePlayerState();
-            // 0x0002 industrial (type 1) + 0x0020 equipment (type 5).
-            const result = board(state, dude(0x0002 | 0x0020), null);
-            expect(result.cargo).toEqual([
-                { type: 1, qty: jasmine.any(Number) },
-                { type: 5, qty: jasmine.any(Number) },
-            ]);
-            for (const entry of result.cargo!) {
-                expect(entry.qty).toBeGreaterThanOrEqual(1);
-                expect(entry.qty).toBeLessThanOrEqual(MAX_BOOTY_TONS);
-            }
-            // Reported as informational cargo effects; no hold exists yet.
-            const cargoEffects = result.effects.filter(e => e.kind === "cargo");
-            expect(cargoEffects.length).toEqual(2);
-            // No money bit: no credits.
-            expect(result.creditsDelta).toBeUndefined();
-            expect(state.credits).toEqual(25000);
-        });
+    it("plunders one commodity drawn from the booty bits", () => {
+        const state = makePlayerState();
+        // 0x0002 industrial (type 1) + 0x0020 equipment (type 5): the
+        // engine plunders a single type per boarding, drawn from the mask.
+        const result = board(state, dude(0x0002 | 0x0020), null);
+        expect(result.cargo!.length).toEqual(1);
+        expect([1, 5]).toContain(result.cargo![0].type);
+        // Quantity: [ceil(15/2), 15] tons of the class's free cargo space.
+        const entry = result.cargo![0];
+        expect(entry.qty).toBeGreaterThanOrEqual(8);
+        expect(entry.qty).toBeLessThanOrEqual(15);
+        // Reported as an informational cargo effect; no hold exists yet.
+        const cargoEffects = result.effects.filter(e => e.kind === "cargo");
+        expect(cargoEffects.length).toEqual(1);
+        // No money bit: no credits.
+        expect(result.creditsDelta).toBeUndefined();
+        expect(state.credits).toEqual(25000);
+    });
 
     it("tells the player they were repelled when the booty mask is 0",
         () => {

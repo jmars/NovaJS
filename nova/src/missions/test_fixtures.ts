@@ -245,6 +245,7 @@ export function makePlayerState(seed = 42): PlayerState {
         gender: "male",
         credits: 25000,
         date: { day: 23, month: 6, year: 1177 },
+        dayCount: 0,
         bits: new Uint8Array(10000),
         exploredSystems: ["nova:300"],
         landedSystems: [],

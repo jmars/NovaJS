@@ -19,9 +19,9 @@
 //   0x0010 metal 0x0020 equipment   0x0040 money ("amount depends on the
 //                                   ship's purchase price")
 //   all clear    → the player is "repelled while attempting to board".
-// Flagged approximations (stock formulas undocumented):
-//   - money: a seeded 10-25% band of the ship class's purchase price;
-//   - commodity quantity: a seeded 1..MAX_BOOTY_TONS band per set bit.
+// Money and commodity bands are REVERSE-ENGINEERED from the binary (the
+// plunder roll FUN_00484230, results in DAT_007d17d8-e0, credited by the
+// board dialog FUN_00482940 @ 0x483461); see the constants below.
 // Commodity plunder is reported as MissionEffect 'cargo' entries (the same
 // signed effect the mission FSM emits); the boarding system applies them
 // into the player's real hold (PlayerState.cargo, player/cargo.ts),
@@ -42,17 +42,29 @@ import { MissionEffect } from "./mission_state_machine";
 // (nova_plugin/dude.ts) that the ECS glue reads off the boarded ship.
 export type BoardingDude = Pick<DudeData, "booty" | "govt">;
 
-// Booty 0x0040: money, drawn as this band of the ship's purchase price.
+// Booty 0x0040: money. REVERSE-ENGINEERED from the binary (FUN_00484230):
+// the base is 2.5% of the ship class's purchase price, truncated to whole
+// k-credits (`FILD [shïp+0x58 Cost]; /1000; FMUL qword [0x575910]` = double
+// 0.025); when that base tops BOOTY_MONEY_BAND_THRESHOLD credits the roll
+// adds rand(base) before scaling back — a [2.5%, 5%) band — and the payout
+// never drops below BOOTY_MONEY_FLOOR. (The engine compares the base in
+// k-credits against the double 2.0 at 0x575900 and clamps `if (< 1000)
+// = 1000`.)
 export const BOOTY_MONEY = 0x0040;
-export const BOOTY_MONEY_MIN_FRACTION = 0.10;
-export const BOOTY_MONEY_MAX_FRACTION = 0.25;
+export const BOOTY_MONEY_FRACTION = 0.025;
+export const BOOTY_MONEY_BAND_THRESHOLD = 2000;
+export const BOOTY_MONEY_FLOOR = 1000;
 
-// Booty 0x0001-0x0020: one commodity per bit, indexed in the mission cargo
-// id space (0-5, the same ids rollCargo and the MissionEffect 'cargo'
-// entries use). Each set bit plunders this many tons at most.
+// Booty 0x0001-0x0020: ONE commodity per boarding, its type drawn uniformly
+// from the set bits (the engine rejection-rolls rand(7) over bits 0-5),
+// indexed in the mission cargo id space (0-5, the same ids rollCargo and
+// the MissionEffect 'cargo' entries use). REVERSE-ENGINEERED quantity: the
+// engine takes half the boarded ship's free cargo space (shïp +0x0, round
+// up) plus rand(half) more — [ceil(cargo/2), cargo] tons — not a fixed
+// 1..10 band (FUN_00484230: `qty = rand((cargo + 1) / 2) + (cargo + 1) / 2`,
+// skipped entirely when the class carries no cargo space).
 export const BOOTY_COMMODITY_BITS = [0x0001, 0x0002, 0x0004, 0x0008, 0x0010,
     0x0020] as const;
-export const MAX_BOOTY_TONS = 10;
 
 // Përs Credits ride this far around their face value (Bible: "+/- 25%").
 export const PERS_CREDITS_VARIANCE = 0.25;
@@ -113,28 +125,37 @@ export function resolveBoard(state: PlayerState, mission: MissionData | null,
     const cargo: ActiveMissionCargo[] = [];
     let creditsDelta = 0;
 
-    // Booty 0x0040: money, 10-25% of the ship's purchase price (flagged
-    // approximation — see the file header).
+    // Booty 0x0040: 2.5% of the ship's purchase price, doubled in a seeded
+    // band once the base tops BOOTY_MONEY_BAND_THRESHOLD, floored at
+    // BOOTY_MONEY_FLOOR (see the constant notes).
     if ((booty & BOOTY_MONEY) !== 0) {
-        const amount = Math.floor(shipData.price
-            * (BOOTY_MONEY_MIN_FRACTION
-                + (BOOTY_MONEY_MAX_FRACTION - BOOTY_MONEY_MIN_FRACTION)
-                * rng()));
-        if (amount > 0) {
-            state.credits += amount;
-            creditsDelta += amount;
-            effects.push({ kind: "pay", amount });
+        const base = Math.trunc(shipData.price / 1000)
+            * BOOTY_MONEY_FRACTION * 1000;
+        let amount: number;
+        if (base > BOOTY_MONEY_BAND_THRESHOLD) {
+            amount = Math.round(base
+                + Math.floor(rng() * Math.round(base / 1000)) * 1000);
         }
+        else {
+            amount = Math.round(base);
+        }
+        amount = Math.max(amount, BOOTY_MONEY_FLOOR);
+        state.credits += amount;
+        creditsDelta += amount;
+        effects.push({ kind: "pay", amount });
     }
 
-    // Booty 0x0001-0x0020: one commodity per set bit (quantity band also
-    // flagged). Reported as 'cargo' effects; the boarding system loads
-    // what fits into the player's hold.
-    for (let type = 0; type < BOOTY_COMMODITY_BITS.length; type++) {
-        if ((booty & BOOTY_COMMODITY_BITS[type]) === 0) {
-            continue;
-        }
-        const qty = 1 + Math.floor(rng() * MAX_BOOTY_TONS);
+    // Booty 0x0001-0x0020: one commodity, its type drawn uniformly from the
+    // set bits, in [ceil(cargo/2), cargo] tons of the ship's free cargo
+    // space. Reported as a 'cargo' effect; the boarding system loads what
+    // fits into the player's hold.
+    const cargoSpace = Math.floor(shipData.physics.freeCargo);
+    const setBits = BOOTY_COMMODITY_BITS.filter(bit => (booty & bit) !== 0);
+    if (cargoSpace >= 1 && setBits.length > 0) {
+        const half = Math.ceil(cargoSpace / 2);
+        const type = BOOTY_COMMODITY_BITS.indexOf(
+            setBits[Math.floor(rng() * setBits.length)]);
+        const qty = half + Math.floor(rng() * half);
         cargo.push({ type, qty });
         effects.push({ kind: "cargo", type, qty });
     }

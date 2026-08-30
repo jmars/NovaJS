@@ -154,6 +154,9 @@ export const PlayerStateFile = t.type({
     activeMissions: t.array(ActiveMissionCodec),
     completedMissions: t.array(t.string),
     failedMissions: t.array(t.string),
+    // Optional on input so pilot files written before the jump counter
+    // existed still load; playerStateFromFile normalizes it to 0.
+    dayCount: t.union([t.number, t.undefined, t.null]),
     availRandomRolls: t.record(t.string, t.number),
     rngSeed: t.number,
     currentSystem: t.string,
@@ -180,6 +183,7 @@ export type PlayerStateFileJSON = t.OutputOf<typeof PlayerStateFile>;
 // {} / [] / {escorts: [], nextId: 0}. Escort orders default to 'follow'.
 export function playerStateFromFile(file: t.TypeOf<typeof PlayerStateFile>): PlayerState {
     const cronStates: Record<string, CronState> = file.cronStates ?? {};
+    const dayCount: number = file.dayCount ?? 0;
     const pers: Record<string, PersProgress> = file.pers ?? {};
     const cargo: CargoEntry[] = file.cargo ?? [];
     const fleet: FleetState = file.fleet
@@ -191,7 +195,7 @@ export function playerStateFromFile(file: t.TypeOf<typeof PlayerStateFile>): Pla
             nextId: file.fleet.nextId,
         }
         : { escorts: [], nextId: 0 };
-    return { ...file, cronStates, pers, cargo, fleet };
+    return { ...file, cronStates, dayCount, pers, cargo, fleet };
 }
 
 // Validates a parsed pilot file and returns the state. Throws an Error
@@ -281,6 +285,7 @@ export function createNewPilot(charData: CharData, rngSeed: number,
         currentSystem: pickStartSystem(charData, makeRng(rngSeed)),
         lastStellar: null,
         shipSnapshot,
+        dayCount: 0,
         cronStates: {},
         pers: {},
         cargo: [],

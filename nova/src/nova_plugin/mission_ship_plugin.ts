@@ -49,7 +49,6 @@ import {
 import { boardRng, resolveBoard } from "../missions/boarding";
 import {
     captureOdds,
-    effectivePlayerCrew,
     outfitMarines,
     rollCapture,
 } from "../missions/capture";
@@ -132,12 +131,15 @@ function findActive(state: PlayerState, missionId: string): ActiveMission | unde
     return state.activeMissions.find(active => active.missionId === missionId);
 }
 
-// The player's boarding context: their ship's crew plus owned marine
-// outfits (oütf ModType 25). Outfit data is read from the sync cache — the
+// The marine-derived facts the boarding capture needs: the player's own
+// ship crew, the marine outfits' extra crew (the engine's crew pool adds
+// these to the player's crew, oütf ModType 25 ModVal > 0) and the percent
+// bonus (ModVal -1..-100). Outfit data is read from the sync cache — the
 // player's own outfits resolve when their ship's physics do, so an
 // uncached id here can only be a cold world; it contributes nothing.
 function playerBoardingCrew(gameData: GameDataInterface, world: World,
-    runQuery: RunQueryFunction): { crew: number; marinePercent: number } {
+    runQuery: RunQueryFunction):
+    { crew: number; marineCrew: number; marinePercent: number } {
     const player = runQuery(PlayerCargoQuery)[0];
     const entity = player ? world.entities.get(player[0]) : undefined;
     const shipCrew = entity?.components.get(ShipDataComponent)?.crew ?? 0;
@@ -153,7 +155,8 @@ function playerBoardingCrew(gameData: GameDataInterface, world: World,
     }
     const marines = outfitMarines(owned);
     return {
-        crew: effectivePlayerCrew(shipCrew, marines.crew),
+        crew: shipCrew,
+        marineCrew: marines.crew,
         marinePercent: marines.oddsPercent,
     };
 }
@@ -568,7 +571,7 @@ export const MissionShipBoardedSystem = new System({
         // where it is — the plundered latch above allows one capture
         // attempt per disable.
         const boarding = playerBoardingCrew(gameData, world, runQuery);
-        const odds = captureOdds(boarding.crew, data.crew,
+        const odds = captureOdds(boarding.crew, boarding.marineCrew,
             boarding.marinePercent);
         const captured = data.crew <= 0 || rollCapture(rng, odds);
         const shipName = entities.get(uuid)?.name ?? data.name;

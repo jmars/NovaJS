@@ -8,15 +8,14 @@
 //   - PriceMod (ränk field) modifies the price of items and ships you BUY
 //     ("special deals on ships and items at 'friendly' planets"); selling
 //     uses the plain Cost.
-//   - Outfit sell-back: the Bible names no sell discount (its only
-//     sell-related oütf flag is 0x0008 "can't be sold"), and EV Nova is
-//     known to refund the full cost — so outfits sell back at Cost
-//     (OUTFIT_SELL_RATIO). Flip the constant if a plugin-style discount is
-//     ever wanted.
-//   - Ship trade-in: "The cost of buying a ship is always the cost of the
-//     new ship minus 25% of the original cost of your current ship and
-//     upgrades" (shïp Cost field) — i.e. 25% of (old ship Cost + Cost of
-//     its installed outfits).
+//   - Outfit sell-back and ship trade-in are REVERSE-ENGINEERED from the
+//     binary (EV Nova 1.0.10 Windows; the outfitter FUN_0048ea70 and the
+//     shïp loader/trade-in FUN_004bd3c0): outfits sell back at HALF cost
+//     (full cost only for outfits bought at this shop this visit — a
+//     per-shop-session fact this module cannot see, so callers pass it via
+//     boughtHere), and the trade-in is 25% of the ship's cost plus HALF of
+//     each installed outfit's cost — not the Bible's flat "25% of ship and
+//     upgrades".
 // The Bible does not cover a trade-in exceeding the new ship's price, so
 // netShipPrice clamps at 0: buying a ship never credits the player.
 
@@ -34,16 +33,32 @@ export interface Wallet {
 export type Outfits = ReadonlyMap<string, { count: number }>;
 
 /**
- * Fraction of an outfit's Cost refunded when selling it back. EV Nova
- * refunds the full price (see module comment).
+ * Fraction of an outfit's Cost refunded when selling it back.
+ * REVERSE-ENGINEERED from the binary (outfitter FUN_0048ea70 @ 0x49003c:
+ * `refund *= (double)0.5` at rdata 0x575940 = 0x3FE0000000000000, applied
+ * when the outfit was NOT bought at this shop this visit; the engine
+ * refunds the plain Cost for outfits bought here).
  */
-export const OUTFIT_SELL_RATIO = 1;
+export const OUTFIT_SELL_RATIO = 0.5;
 
 /**
- * Fraction of the current ship's original cost (plus its outfits') credited
- * when trading up. Nova Bible: 25% of "your current ship and upgrades".
+ * Fraction of the current ship's cost credited when trading up.
+ * REVERSE-ENGINEERED from the binary (shïp loader FUN_004bd3c0 @ 0x4c1e88:
+ * `FILD [shïp+0x58 Cost]; FMUL qword [0x575e80]` where 0x575e80 holds the
+ * double 0.25). Outfits trade at their own ratio — see TRADE_IN_OUTFIT_RATIO.
  */
-export const TRADE_IN_RATIO = 0.25;
+export const TRADE_IN_SHIP_RATIO = 0.25;
+
+/**
+ * Fraction of each installed outfit's cost added to the trade-in.
+ * REVERSE-ENGINEERED from the binary (FUN_004bd3c0 @ 0x4c21c5:
+ * `FMUL qword [0x575e88]` = double 0.5, once per outfit line, rounded per
+ * step). The Nova Bible's "25% of your current ship and upgrades" is
+ * imprecise: outfits credit at HALF their cost, which is why the engine
+ * warns a trade-in can exceed a cheap ship's price ("has a trade-in value
+ * of ... but costs only ...", FUN_004bd3c0 @ 0x4c28cc).
+ */
+export const TRADE_IN_OUTFIT_RATIO = 0.5;
 
 /** What a purchase changed, for UI refresh + logging. */
 export type Mutation = {
@@ -120,15 +135,18 @@ export function buyOutfit(wallet: Wallet, outfits: Outfits, outfit: OutfitData,
 /**
  * Sells one of `outfit` back: refunds OUTFIT_SELL_RATIO of its Cost
  * (unmodified by priceMod — that is a buying discount) and frees its space.
- * Returns null when the player has none to sell.
+ * `boughtHere` marks an outfit bought at this shop this visit — the engine
+ * refunds those at full Cost. Returns null when the player has none to
+ * sell.
  */
 export function sellOutfit(wallet: Wallet, outfits: Outfits, outfit: OutfitData,
-    freeMass: number): OutfitPurchaseResult | null {
+    freeMass: number, boughtHere = false): OutfitPurchaseResult | null {
     const owned = outfits.get(outfit.id)?.count ?? 0;
     if (owned <= 0) {
         return null;
     }
-    const refund = Math.round(outfit.price * OUTFIT_SELL_RATIO);
+    const refund = Math.round(outfit.price
+        * (boughtHere ? 1 : OUTFIT_SELL_RATIO));
     const nextOutfits = new Map(outfits);
     if (owned === 1) {
         nextOutfits.delete(outfit.id);
@@ -174,21 +192,21 @@ export function shipPrice(ship: ShipData, priceMod: number): number {
 }
 
 /**
- * Trade-in credit for the current ship: TRADE_IN_RATIO of its original
- * price plus the original price of every outfit it carries (Nova Bible:
- * "25% of the original cost of your current ship and upgrades", rounded).
- * Outfit ids with missing data contribute 0.
+ * Trade-in credit for the current ship: TRADE_IN_SHIP_RATIO of its price
+ * plus TRADE_IN_OUTFIT_RATIO of every outfit's price, rounded per step like
+ * the engine (FUN_004bd3c0; see the ratio docs). Outfit ids with missing
+ * data contribute 0.
  */
 export function tradeInValue(currentShipPrice: number, currentOutfits: Outfits,
     outfitPrice: (id: string) => number | null): number {
-    let total = currentShipPrice;
+    let total = Math.round(currentShipPrice * TRADE_IN_SHIP_RATIO);
     for (const [id, { count }] of currentOutfits) {
         const price = outfitPrice(id);
         if (price !== null) {
-            total += price * count;
+            total = Math.round(total + price * count * TRADE_IN_OUTFIT_RATIO);
         }
     }
-    return Math.round(total * TRADE_IN_RATIO);
+    return total;
 }
 
 /** The full price of the new ship minus its trade-in, never below 0. */

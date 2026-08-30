@@ -12,7 +12,7 @@ import { getDefaultShipData, ShipData } from "novadatainterface/ShipData";
 import {
     buyOutfit, buyShip, canBuyOutfit, canBuyShip, freeMassOf, Mutation,
     netShipPrice, OUTFIT_SELL_RATIO, outfitPrice, sellOutfit, shipPrice,
-    tradeInValue, TRADE_IN_RATIO, Wallet,
+    tradeInValue, TRADE_IN_OUTFIT_RATIO, TRADE_IN_SHIP_RATIO, Wallet,
 } from "./purchase";
 
 
@@ -110,19 +110,24 @@ describe("buyOutfit", () => {
 describe("sellOutfit", () => {
     const outfit = makeOutfit(5000, 3, "nova:blaster");
 
-    it("refunds the full price and frees the mass", () => {
-        expect(OUTFIT_SELL_RATIO).toBe(1); // EV Nova sell-back: full Cost
-        const result = sellOutfit(wallet(100),
-            outfitsOf([["nova:blaster", 1]]), outfit, 4);
-        expect(result).not.toBeNull();
-        expect(result!.credits).toBe(5100);
-        expect(result!.freeMass).toBe(7);
-        expect(result!.outfits.has("nova:blaster")).toBeFalse();
-        expect(result!.mutation).toEqual({
-            kind: "sellOutfit", outfitId: "nova:blaster", count: 0,
-            credits: 5100, freeMass: 7,
-        } as Mutation);
-    });
+    it("refunds half the price (full only if bought here) and frees the mass",
+        () => {
+            expect(OUTFIT_SELL_RATIO).toBe(0.5); // engine: refund ×= 0.5
+            const result = sellOutfit(wallet(100),
+                outfitsOf([["nova:blaster", 1]]), outfit, 4);
+            expect(result).not.toBeNull();
+            expect(result!.credits).toBe(2600);
+            expect(result!.freeMass).toBe(7);
+            expect(result!.outfits.has("nova:blaster")).toBeFalse();
+            expect(result!.mutation).toEqual({
+                kind: "sellOutfit", outfitId: "nova:blaster", count: 0,
+                credits: 2600, freeMass: 7,
+            } as Mutation);
+            // An outfit bought at this shop this visit refunds full Cost.
+            const here = sellOutfit(wallet(100),
+                outfitsOf([["nova:blaster", 1]]), outfit, 4, true);
+            expect(here!.credits).toBe(5100);
+        });
 
     it("decrements counts above one", () => {
         const result = sellOutfit(wallet(0),
@@ -157,12 +162,14 @@ describe("ship prices", () => {
         expect(shipPrice(ship, 0.9)).toBe(180000);
     });
 
-    it("trades in 25% of the current ship and its outfits", () => {
-        expect(TRADE_IN_RATIO).toBe(0.25); // Nova Bible shïp Cost field
+    it("trades in 25% of the ship plus 50% of its outfits", () => {
+        expect(TRADE_IN_SHIP_RATIO).toBe(0.25); // engine: Cost × [0x575e80]
+        expect(TRADE_IN_OUTFIT_RATIO).toBe(0.5); // engine: cost × [0x575e88]
         const tradeIn = tradeInValue(200000, outfitsOf([["a", 2], ["b", 1]]),
             id => ({ a: 5000, b: 10000 }[id] ?? null));
-        // 25% of (200000 + 2*5000 + 10000) = 55000
-        expect(tradeIn).toBe(55000);
+        // 25% of 200000 = 50000, + 50% of 2*5000 = 55000, + 50% of 10000
+        // = 60000 — NOT the Bible's flat 25% of ship + upgrades (55000).
+        expect(tradeIn).toBe(60000);
     });
 
     it("treats missing outfit prices as 0 for trade-in", () => {

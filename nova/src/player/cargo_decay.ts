@@ -12,17 +12,24 @@ import {
     isStandardCommodity,
 } from "./cargo";
 
-// jünk flags (JunkData.flags): 0x0001 tribbles multiply, 0x0002 perishable
+// jünk flags (JunkData.flags): 0x0001 tribbles grow, 0x0002 perishable
 // decays. Both flags on one jünk are applied tribbles-first.
 export const TRIBBLE_FLAG = 0x0001;
 export const PERISHABLE_FLAG = 0x0002;
 
-// APPROX: the Bible documents the flags but no rates, and stock data flags
-// no jünk (all 23 flags=0), so these are tunable guesses, single-sourced
-// here. Tribbles double each jump-day; perishables lose ceil(10%) of their
-// tons each jump-day (min 1, down to 0).
-export const TRIBBLE_GROWTH_PER_DAY = 2;
-export const PERISHABLE_DECAY_FRACTION = 0.10;
+// REVERSE-ENGINEERED from the binary (EV Nova 1.0.10 Windows, the landing
+// tick FUN_0044aa70 @ 0x451e6f): both effects fire only on jump-days where
+// the engine's jump counter (FUN_00417600 @ 0x417c20 increments it once per
+// day from game start) satisfies dayCount % 250 == 0 — roughly every 250th
+// jump. On such a day a tribble-flagged jünk with cargo on hand grows by
+// exactly 1 ton (FOLKLORE NOTE: it does NOT double), and a
+// perishable-flagged jünk loses exactly 1 ton — no percentage anywhere.
+// Both loops are skipped while the hold has no free space, and stock data
+// flags no jünk with either bit (all 23 flags = 0), so these paths only
+// run for plugin data.
+export const DECAY_PERIOD_DAYS = 250;
+export const TRIBBLE_GROWTH_TONS = 1;
+export const PERISHABLE_DECAY_TONS = 1;
 
 // One hold change: signed tonnage for jünk `type` — positive = tribble
 // growth, negative = perishable decay. Only changed entries appear.
@@ -39,18 +46,27 @@ export interface CargoDecayResult {
 }
 
 /**
- * Applies one jump-day of commodity decay to `cargo`. Standard commodities
- * (types 0-5) are never touched; a jünk with unknown/undefined flags is left
- * unchanged. Tribble entries grow by (TRIBBLE_GROWTH_PER_DAY - 1) × qty,
- * capped by the hold's free tonnage — the unbounded-growth answer. `freeTons`
- * is the free space at call time (ship_plugin.shipFreeCargoTons): decay
- * frees space for later growth and growth consumes it, and `null` (unknown
- * capacity) grows unconditionally, matching the cargo-pickup convention in
+ * Applies one jump-day of commodity decay to `cargo`. Runs the engine's
+ * real schedule (cargo_decay.ts constants): nothing happens unless
+ * `dayCount % DECAY_PERIOD_DAYS === 0` — the caller passes the jump
+ * counter it advances each landing — and then tribble entries grow by
+ * TRIBBLE_GROWTH_TONS (capped by the hold's free tonnage) and perishable
+ * entries lose PERISHABLE_DECAY_TONS. Standard commodities (types 0-5)
+ * are never touched; a jünk with unknown/undefined flags is left
+ * unchanged. `freeTons` is the free space at call time
+ * (ship_plugin.shipFreeCargoTons): decay frees space for later growth and
+ * growth consumes it, and `null` (unknown capacity) grows
+ * unconditionally, matching the cargo-pickup convention in
  * applyCargoEffects. Deterministic arithmetic — no rng.
  */
 export function applyCargoDecay(cargo: CargoEntry[],
     flagsOf: (type: number) => number | undefined,
-    freeTons: number | null): CargoDecayResult {
+    freeTons: number | null, dayCount: number): CargoDecayResult {
+    // The engine runs these effects only on the 250th-jump days; the caller
+    // supplies the same jump counter it advances per landing.
+    if (dayCount <= 0 || dayCount % DECAY_PERIOD_DAYS !== 0) {
+        return { cargo, effects: [] };
+    }
     let used = cargoUsedTons(cargo);
     // Track the free-space budget as a total capacity so decay widens it
     // (and earlier growth narrows it) as the pass runs.
@@ -64,7 +80,7 @@ export function applyCargoDecay(cargo: CargoEntry[],
             const flags = flagsOf(entry.type);
             if (flags !== undefined) {
                 if (flags & TRIBBLE_FLAG) {
-                    const growth = Math.min(qty * (TRIBBLE_GROWTH_PER_DAY - 1),
+                    const growth = Math.min(TRIBBLE_GROWTH_TONS,
                         capacity === null ? Infinity : capacity - used);
                     if (growth > 0) {
                         qty += growth;
@@ -73,8 +89,10 @@ export function applyCargoDecay(cargo: CargoEntry[],
                     }
                 }
                 if (flags & PERISHABLE_FLAG) {
-                    const loss = Math.min(qty,
-                        Math.ceil(qty * PERISHABLE_DECAY_FRACTION));
+                    // Faithfulness quirk: the engine gates the perishable
+                    // loop on the same free-space check as tribble growth,
+                    // so a completely full hold never spoils either.
+                    const loss = Math.min(qty, PERISHABLE_DECAY_TONS);
                     if (loss > 0) {
                         qty -= loss;
                         used -= loss;

@@ -43,7 +43,8 @@ function state(credits: number, cargo: TradeState["cargo"] = [], freeTons = 20):
     return { credits, cargo, freeTons };
 }
 
-// The standard Food good of a planet, for direct buy/sell specs (base 5).
+// The standard Food good of a planet, for direct buy/sell specs. The
+// stock base prices are all 0, so every band prices at the 5-credit floor.
 function foodGood(priceBands: number[]): TradeGood {
     return tradablesAt(planet({ hasTradeCenter: true, priceBands }), new Map(), ctx())[0];
 }
@@ -52,18 +53,20 @@ function foodGood(priceBands: number[]): TradeGood {
 describe("commodity price math", () => {
 
     it("applies the band multipliers", () => {
-        // Bands: 0 won't trade, 1 low (0.75), 2 medium (1), 3 high (1.25).
-        expect(BAND_MULTIPLIERS).toEqual([0, 0.75, 1, 1.25]);
+        // Bands: 0 won't trade, 1 low (base / 1.25 = 0.8), 2 medium (the
+        // base untouched), 3 high (base * 1.25) — the engine's exchange
+        // divides/multiplies by its 1.25 default price modifier.
+        expect(BAND_MULTIPLIERS).toEqual([0, 0.8, 1, 1.25]);
         expect(commodityPrice(100, 0)).toBe(0);
-        expect(commodityPrice(100, 1)).toBe(75);
+        expect(commodityPrice(100, 1)).toBe(80);
         expect(commodityPrice(100, 2)).toBe(100);
         expect(commodityPrice(100, 3)).toBe(125);
     });
 
-    it("rounds and never prices a tradable commodity below 1 credit", () => {
-        expect(commodityPrice(7, 1)).toBe(5);  // 5.25 rounds down
-        expect(commodityPrice(1, 1)).toBe(1);  // 0.75 clamps up
-        expect(commodityPrice(0, 2)).toBe(1);
+    it("rounds and never prices a tradable commodity below 5 credits", () => {
+        expect(commodityPrice(7, 1)).toBe(6);  // 5.6 rounds up, above the floor
+        expect(commodityPrice(1, 1)).toBe(5);  // 0.8 clamps up to the floor
+        expect(commodityPrice(0, 2)).toBe(5);  // stock base prices are 0
     });
 
     it("folds the buying price modifier into the band price", () => {
@@ -88,7 +91,8 @@ describe("tradablesAt", () => {
             planet({ hasTradeCenter: true, priceBands: [2, 0, 1, 3, 2, 0] }),
             new Map(), ctx());
         expect(goods.map(good => good.type)).toEqual([0, 2, 3, 4]);
-        expect(goods.map(good => good.price)).toEqual([5, 15, 50, 15]);
+        // Stock base prices are 0: every band price hits the 5-credit floor.
+        expect(goods.map(good => good.price)).toEqual([5, 5, 5, 5]);
         for (const good of goods) {
             expect(good.canBuy).toBeTrue();
             expect(good.canSell).toBeTrue();

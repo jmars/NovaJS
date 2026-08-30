@@ -145,11 +145,12 @@ const BOARD_MISSION: MissionData = {
 
 // --- P4: capture ---
 
-// A crewed defender for the repelled-capture paths. Crew 1000 against an
-// empty player ship clamps the odds to the 5% floor; the board seed for
-// raw id 602 under the fixture state draws 48.7% there, so the repulse is
-// deterministic (and a marine outfit at +1000 crew/+20% flips it to 57.5%,
-// flipping the outcome).
+// A crewed defender for the repelled-capture paths. The recovered engine
+// odds never read the defender: a bare boarder sits at 10% (jittered +-5,
+// clamped 1..75), and the board seed for raw id 602 under the fixture state
+// draws jitter 0 / roll 48, so 48 > 10 repels deterministically — while a
+// marine outfit (+1000 crew, +20%) clamps the odds at 75 and 48 <= 75
+// captures, flipping the outcome.
 const FAIL_SHIP = {
     ...getDefaultShipData(),
     id: "nova:602",
@@ -475,9 +476,8 @@ describe("mission ship spawning and goals", () => {
             // No return stellar: the bounty completes in space.
             expect(state.activeMissions).toEqual([]);
             expect(state.completedMissions).toEqual([BOARD_MISSION.id]);
-            // Booty money: the flagged 10-25%-of-price band (price 10000).
-            expect(state.credits).toBeGreaterThanOrEqual(26000);
-            expect(state.credits).toBeLessThanOrEqual(27500);
+            // Booty money: 2.5% of 10000 = 250 credits, floored at 1000.
+            expect(state.credits).toEqual(26000);
         });
 
     it("completes rescue goals from BoardedEvents", async () => {
@@ -583,7 +583,7 @@ describe("mission ship spawning and goals", () => {
             const { world, state, missionShips } = await makeTestWorld([
                 activeMission,
             ]);
-            world.entities.set("player ship", makePlayerShip(0));
+            world.entities.set("player ship", makePlayerShip(10));
             const ship = missionShips()[0];
             boardGoalShip(world, ship, FAIL_SHIP);
 
@@ -609,7 +609,7 @@ describe("mission ship spawning and goals", () => {
             const { world, state, missionShips } = await makeTestWorld([
                 activeMission,
             ]);
-            world.entities.set("player ship", makePlayerShip(0));
+            world.entities.set("player ship", makePlayerShip(10));
             boardGoalShip(world, missionShips()[0], FAIL_SHIP);
 
             // The boarding happened either way — the goal bookkeeping ran.
@@ -631,7 +631,7 @@ describe("mission ship spawning and goals", () => {
             const { world, state, missionShips } = await makeTestWorld([
                 activeMission,
             ]);
-            world.entities.set("player ship", makePlayerShip(0));
+            world.entities.set("player ship", makePlayerShip(10));
             boardGoalShip(world, missionShips()[0], FAIL_SHIP);
 
             expect(activeMission.specialShips!.boarded).toEqual(1);
@@ -651,13 +651,13 @@ describe("mission ship spawning and goals", () => {
         boardGoalShip(a.world, a.missionShips()[0]);
         expect(a.state.fleet.escorts.length).toEqual(1);
 
-        // World B: the same hull with a crew (same raw id, same seed). One
-        // capture draw follows the loot and lands above the 5% clamp
-        // (fixture seed 42, draw 5.49%): repelled.
+        // World B: a crewed hull (raw id 602, same price so the loot is
+        // identical). One capture draw follows the loot — the fixture seed
+        // draws jitter 0 / roll 48 over the bare boarder's 10% odds:
+        // repelled.
         const b = await makeTestWorld([active(BOARD_MISSION)]);
-        b.world.entities.set("player ship", makePlayerShip(0));
-        boardGoalShip(b.world, b.missionShips()[0],
-            { ...PRICED_SHIP, crew: 1000 });
+        b.world.entities.set("player ship", makePlayerShip(10));
+        boardGoalShip(b.world, b.missionShips()[0], FAIL_SHIP);
         expect(b.state.fleet.escorts).toEqual([]);
 
         // Identical loot whether or not a capture draw followed it.
@@ -666,23 +666,22 @@ describe("mission ship spawning and goals", () => {
 
         // Same state, same rolls: replaying B replays the repulse exactly.
         const b2 = await makeTestWorld([active(BOARD_MISSION)]);
-        b2.world.entities.set("player ship", makePlayerShip(0));
-        boardGoalShip(b2.world, b2.missionShips()[0],
-            { ...PRICED_SHIP, crew: 1000 });
+        b2.world.entities.set("player ship", makePlayerShip(10));
+        boardGoalShip(b2.world, b2.missionShips()[0], FAIL_SHIP);
         expect(b2.state.credits).toEqual(b.state.credits);
         expect(b2.state.fleet.escorts).toEqual([]);
     });
 
     it("swings the capture with marine outfits through the glue", async () => {
-        // Bare player (crew 0): the odds clamp to 5%, and the fixture's
-        // capture draw (48.7%) repels.
+        // Bare player (crew 10): 10% odds, and the fixture's roll (48)
+        // repels.
         const bare = await makeTestWorld([active(FAIL_BOARD_MISSION)]);
-        bare.world.entities.set("player ship", makePlayerShip(0));
+        bare.world.entities.set("player ship", makePlayerShip(10));
         boardGoalShip(bare.world, bare.missionShips()[0], FAIL_SHIP);
         expect(bare.state.fleet.escorts).toEqual([]);
 
-        // With marines (+1000 crew, +20%): 75 * 1000/2000 + 20 = 57.5%,
-        // and the same draw now captures.
+        // With marines (+1000 crew, +20%): (10+1000)/(10*10)*100 + 20
+        // clamps at 75, and the same roll (48) now captures.
         const marines = await makeTestWorld([active(FAIL_BOARD_MISSION)]);
         marines.gameData.data.Outfit.map.set(MARINE_OUTFIT.id, MARINE_OUTFIT);
         await marines.gameData.data.Outfit.get(MARINE_OUTFIT.id);

@@ -32,8 +32,16 @@ import {
 
 // Base price in credits/ton for the six standard commodities (STR# 4000
 // order: 0 Food, 1 Industrial, 2 Medical Supplies, 3 Luxury Goods, 4 Metal,
-// 5 Equipment). FLAGGED APPROXIMATION — see the module comment.
-export const STANDARD_BASE_PRICES: readonly number[] = [5, 10, 20, 40, 15, 100];
+// 5 Equipment). REVERSE-ENGINEERED from the binary (EV Nova 1.0.10
+// Windows, new-game init FUN_004b0c20 @ 0x4b2c60): each price is read from
+// the 'STR ' resource 9300+i, falling back to STR# 4000 string i+1 — the
+// commodity NAME — run through StringToNum. Stock data contains no 'STR '
+// resources at all and "Food"/"Industrial"/"Medical Supplies"/"Luxury
+// Goods"/"Metal"/"Equipment" parse as 0, so every stock base price is 0
+// and every standard commodity trades at the engine's 5-credit floor (see
+// MIN_TRADE_PRICE). Plugins may supply real prices via 'STR ' 9300-9305;
+// tradablesAt accepts them through its standardPrices parameter.
+export const STANDARD_BASE_PRICES: readonly number[] = [0, 0, 0, 0, 0, 0];
 
 // Fallback commodity names, also STR# 4000 order. The UI overrides these
 // with the real string set when it is present.
@@ -42,21 +50,34 @@ export const STANDARD_COMMODITY_NAMES: readonly string[] = [
     "Equipment",
 ];
 
-// Price multiplier per band (PlanetData.priceBands entries). Band 0 means
-// the planet won't trade the commodity at all. FLAGGED APPROXIMATION —
-// the engine's real low/high factors are unknown offline.
-export const BAND_MULTIPLIERS: readonly number[] = [0, 0.75, 1, 1.25];
+// Price factor per band (PlanetData.priceBands entries). Band 0 means
+// the planet won't trade the commodity at all. REVERSE-ENGINEERED from the
+// binary (exchange FUN_0048c730 @ 0x48c7eb): band 1 (low) DIVIDES the base
+// by the price modifier, band 2 (medium) returns the base untouched, band
+// 4 (high) MULTIPLIES by it. The modifier is the double 1.25 normally,
+// 1.1 when the player is wanted in the system (legal status < 0) and 1.5
+// at a dominated spöb (spöb +0x46) — hence 1/1.25 = 0.8 low and 1.25 high.
+export const BAND_MULTIPLIERS: readonly number[] = [0, 0.8, 1, 1.25];
+
+// The exchange floors every standard-commodity price at 5 credits/ton
+// (FUN_0048c730 @ 0x48c852: `if (price < 5) price = 5`, applied after the
+// band math and again after any dïsaster price adjustment). With the stock
+// base prices all 0 this floor is what the player actually sees.
+export const MIN_TRADE_PRICE = 5;
 
 // The local price of one ton of a standard commodity at a planet with the
 // given band, under the given buying price modifier. Band 0 (won't trade)
-// prices 0; callers must treat a 0 price as "not tradable". Never below 1
-// credit/ton where trading happens.
+// prices 0; callers must treat a 0 price as "not tradable". Never below
+// MIN_TRADE_PRICE where trading happens. (priceMod folds a further buying
+// discount in multiplicatively; the engine itself applies no such discount
+// in the exchange — its 1.25/1.1/1.5 modifier is what BAND_MULTIPLIERS
+// already encodes for the low/high bands.)
 export function commodityPrice(base: number, band: number, priceMod: number = 1): number {
     const multiplier = BAND_MULTIPLIERS[band] ?? 0;
     if (multiplier <= 0) {
         return 0;
     }
-    return Math.max(1, Math.round(base * multiplier * priceMod));
+    return Math.max(MIN_TRADE_PRICE, Math.round(base * multiplier * priceMod));
 }
 
 // One tradable good in a planet's exchange. Doubles as the item shape the
@@ -88,11 +109,17 @@ export interface TradeGood {
 // built-in names.
 export function tradablesAt(planet: PlanetData,
     junks: ReadonlyMap<number, JunkData>, testCtx: TestContext,
-    standardNames?: readonly string[]): TradeGood[] {
+    standardNames?: readonly string[],
+    standardPrices?: readonly number[]): TradeGood[] {
     const goods: TradeGood[] = [];
+    // REVERSE-ENGINEERED source hook: standardPrices are the 'STR '
+    // 9300-9305 resources the engine reads at new game (see
+    // STANDARD_BASE_PRICES); absent in stock data, they default to the
+    // stock-derived all-zero table.
+    const basePrices = standardPrices ?? STANDARD_BASE_PRICES;
 
     if (planet.hasTradeCenter) {
-        for (var type = 0; type < STANDARD_BASE_PRICES.length; type++) {
+        for (var type = 0; type < basePrices.length; type++) {
             var band = planet.priceBands[type] ?? 0;
             if (band <= 0) {
                 continue;
@@ -105,7 +132,7 @@ export function tradablesAt(planet: PlanetData,
                 desc: "Standard commodity.",
                 pict: "",
                 type,
-                price: commodityPrice(STANDARD_BASE_PRICES[type], band),
+                price: commodityPrice(basePrices[type] ?? 0, band),
                 canBuy: true,
                 canSell: true,
             });

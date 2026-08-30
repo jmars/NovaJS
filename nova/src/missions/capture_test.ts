@@ -1,6 +1,6 @@
-// Pure capture-odds specs (P4 of cargo+capture): the weighted-crew formula
-// and its clamp, the marine-outfit aggregation, and the seeded roll. Run
-// with:
+// Pure capture-odds specs (P4 of cargo+capture): the recovered engine
+// formula (crew pool over 10× own crew), the marine-outfit aggregation, and
+// the jittered, clamped seeded roll. Run with:
 //   npx esbuild --bundle --platform=node nova/src/missions/capture_test.ts \
 //       --outfile=/tmp/capture_test.js && node_modules/.bin/jasmine /tmp/capture_test.js
 
@@ -8,11 +8,10 @@ import "jasmine";
 import { getDefaultOutfitData } from "novadatainterface/OutiftData";
 import { makeRng } from "../player/pilot_files";
 import {
+    CAPTURE_ODDS_BASE_PERCENT,
     CAPTURE_ODDS_MAX,
     CAPTURE_ODDS_MIN,
-    CAPTURE_ODDS_WEIGHT,
     captureOdds,
-    effectivePlayerCrew,
     outfitMarines,
     rollCapture,
 } from "./capture";
@@ -23,35 +22,22 @@ function marinesOutfit(crew: number, oddsPercent: number) {
 }
 
 describe("capture odds", () => {
-    it("weights the crew ratio: equal crews sit at 37.5%", () => {
-        expect(CAPTURE_ODDS_WEIGHT).toEqual(75);
-        expect(captureOdds(10, 10, 0)).toBeCloseTo(37.5);
-        expect(captureOdds(30, 70, 0)).toBeCloseTo(22.5);
-        expect(captureOdds(70, 30, 0)).toBeCloseTo(52.5);
+    it("weights the boarder's crew pool, not the defender's", () => {
+        // pool / (ownCrew * 10) * 100: 10% flat without marines, whatever
+        // the defender fields — the engine never reads the defender's crew.
+        expect(CAPTURE_ODDS_BASE_PERCENT).toEqual(10);
+        expect(captureOdds(10, 0, 0)).toEqual(10);
+        expect(captureOdds(20, 0, 0)).toEqual(10);
+        expect(captureOdds(20, 10, 0)).toEqual(15);  // 30/(20*10)*100
+        expect(captureOdds(10, 30, 0)).toEqual(40);  // 40/(10*10)*100
     });
 
-    it("adds the marines percent bonus on top of the ratio", () => {
-        expect(captureOdds(30, 70, 25)).toBeCloseTo(47.5);
+    it("adds the marines percent bonus on top of the pool", () => {
+        expect(captureOdds(20, 10, 25)).toEqual(40);
     });
 
-    it("clamps to 5..95 so no board is certain or hopeless", () => {
-        expect(CAPTURE_ODDS_MIN).toEqual(5);
-        expect(CAPTURE_ODDS_MAX).toEqual(95);
-        expect(captureOdds(0, 10000, 0)).toEqual(5);
-        expect(captureOdds(10000, 1, 25)).toEqual(95);
-        expect(captureOdds(30, 70, 500)).toEqual(95);
-        expect(captureOdds(30, 70, -500)).toEqual(5);
-    });
-
-    it("treats an all-around crewless board as equal crews", () => {
-        expect(captureOdds(0, 0, 0)).toBeCloseTo(37.5);
-    });
-});
-
-describe("effective player crew", () => {
-    it("adds the owned marine crew to the ship's crew", () => {
-        expect(effectivePlayerCrew(6, 4)).toEqual(10);
-        expect(effectivePlayerCrew(6, 0)).toEqual(6);
+    it("keeps a crewless boarder out of the formula (glue auto-captures)", () => {
+        expect(captureOdds(0, 10000, 0)).toEqual(100);
     });
 });
 
@@ -78,10 +64,21 @@ describe("capture roll", () => {
         expect(second).toEqual(first);
     });
 
-    it("always captures at 100 and never at 0", () => {
+    it("jitters, clamps to 1..75, then rolls rand(100) <= odds", () => {
+        expect(CAPTURE_ODDS_MIN).toEqual(1);
+        expect(CAPTURE_ODDS_MAX).toEqual(75);
+        // odds 100: even the worst jitter (100-5=95) clamps at 75 and
+        // rand(100) <= 75 always holds.
         for (const seed of [1, 42, 999999]) {
             expect(rollCapture(makeRng(seed), 100)).toBeTrue();
-            expect(rollCapture(makeRng(seed), 0)).toBeFalse();
         }
+        // odds 0: the best jitter (0+5=5) survives the clamp at 1, but
+        // capture needs rand(100) <= 1 — 1% per attempt, not certainty.
+        let hits = 0;
+        for (let seed = 1; seed <= 2000; seed++) {
+            if (rollCapture(makeRng(seed), 0)) hits++;
+        }
+        expect(hits).toBeGreaterThan(0);
+        expect(hits).toBeLessThan(200);
     });
 });

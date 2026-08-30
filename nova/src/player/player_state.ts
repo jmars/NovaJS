@@ -27,6 +27,7 @@ export interface PlayerState {
     activeMissions: ActiveMission[];               // max 16 (Bible: Max Simultaneous Missions)
     completedMissions: string[];
     failedMissions: string[];
+    dayCount: number;                              // jumps since game start (engine: decay runs every 250th)
     availRandomRolls: Record<string, number>;      // missionId -> 0..99 roll, re-rolled on warp-in
     rngSeed: number;                               // master seed for R()/dude rolls/random dests
     currentSystem: string;
