@@ -32,12 +32,15 @@ import { WeaponData } from "novadatainterface/WeaponData";
 import * as path from "path";
 
 
-type PathInfo = {
+export type PathInfo = {
     path: string,
     extension: string
 };
 
-const Paths = {
+// Single source of truth for where each data type lives and which file
+// extension it is served with. Shared by the server and the static
+// site generator (scripts/generate_static.ts).
+export const Paths = {
     Ship: { path: "Ship", extension: "json" } as PathInfo,
     Outfit: { path: "Outfit", extension: "json" } as PathInfo,
     Weapon: { path: "Weapon", extension: "json" } as PathInfo,
@@ -118,7 +121,11 @@ class FilesystemData implements GameDataInterface {
                                 fulfill(JSON.parse(contents.toString('utf8')) as T)
                             }
                             else if (p.extension == "png") {
-                                fulfill(contents.buffer as T);
+                                // Slice out exactly the file's bytes: fs.readFile
+                                // may hand back a view into a larger pooled
+                                // ArrayBuffer, and consumers expect a
+                                // correctly-sized buffer.
+                                fulfill(contents.buffer.slice(contents.byteOffset, contents.byteOffset + contents.byteLength) as T);
                             }
                             else {
                                 reject("Unsupported");

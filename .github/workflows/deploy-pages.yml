@@ -1,0 +1,61 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  pages: write
+  id-token: write
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      # The full EV Nova game data ships as a release asset so it never
+      # enters git history.
+      - name: Download game data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download game-data --dir /tmp
+
+      - name: Unpack game data
+        run: |
+          mkdir -p "nova/Nova_Data"
+          unzip -o /tmp/game-data.zip -d nova/Nova_Data
+          # NovaParse requires the Plug-ins directory to exist (it may be
+          # empty); without it the ID space silently falls back to defaults.
+          mkdir -p "nova/Nova_Data/Plug-ins"
+
+      - name: Build static site
+        run: npm run build:site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-site
+
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

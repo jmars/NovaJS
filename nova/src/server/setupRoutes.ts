@@ -32,17 +32,21 @@ class GameDataServer {
         // NOTE: This can not be converted to RPCs because PIXI.js
         // expects assets to be loaded from URLs.
 
-        this.app.get(path.join(dataPath, ":name/:item.png"), this.requestFulfiller.bind(this));
-        this.app.get(path.join(dataPath, ":name/:item.json"), this.requestFulfiller.bind(this));
-        this.app.get(path.join(dataPath, ":name/:item.mp3"), this.requestFulfiller.bind(this));
-        this.app.get(path.join(dataPath, ":name/:item"), this.requestFulfiller.bind(this));
-        this.app.get(idsPath + ".json", this.idRequestFulfiller.bind(this));
+        // Constants in GameDataPaths are relative (for GH Pages base-path
+        // independence); express path-to-regexp patterns must be absolute,
+        // so prepend '/' here or they'd never match and fall through to the
+        // SPA catch-all.
+        this.app.get(path.posix.join("/", dataPath, ":name/:item.png"), this.requestFulfiller.bind(this));
+        this.app.get(path.posix.join("/", dataPath, ":name/:item.json"), this.requestFulfiller.bind(this));
+        this.app.get(path.posix.join("/", dataPath, ":name/:item.mp3"), this.requestFulfiller.bind(this));
+        this.app.get(path.posix.join("/", dataPath, ":name/:item"), this.requestFulfiller.bind(this));
+        this.app.get("/" + idsPath + ".json", this.idRequestFulfiller.bind(this));
 
         this.app.use('/preloadData.json', async (_req, res) => {
             res.send(this.gameData.preloadData ? await this.gameData.preloadData : {});
         });
 
-        this.app.use(settingsPrefix,
+        this.app.use("/" + settingsPrefix,
             express.static(this.settingsPath));
 
         //        // This has to be here or else sourcemaps don't work!

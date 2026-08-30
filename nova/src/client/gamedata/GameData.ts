@@ -103,11 +103,11 @@ export class GameData implements GameDataInterface {
     }
 
     getSettings(file: string): Promise<unknown> {
-        return this.getUrl(urlJoin("/settings", file));
+        return this.getUrl(urlJoin("settings", file));
     }
 
     private async preload() {
-        const data = await (await fetch('/preloadData.json')).json() as PreloadData;
+        const data = await (await fetch('preloadData.json')).json() as PreloadData;
         for (const [uncastKey, val] of Object.entries(data)) {
             const key = uncastKey as keyof typeof data;
             this.data[key].gotten = val;

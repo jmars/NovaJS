@@ -35,6 +35,7 @@
         "@types/ws": "^8.5.4",
         "argparse": "^2.0.1",
         "comlink": "^4.4.1",
+        "esbuild": "^0.28.2",
         "esbuild-visualizer": "^0.4.0",
         "http-server": "^14.1.1",
         "immer": "^9.0.16",
@@ -62,6 +63,9 @@
     "scripts": {
         "build": "bazelisk build //...",
         "build-docker": "bazelisk build nova:nova_image.tar",
+        "build:browser": "esbuild --bundle nova/src/browser.ts --outfile=nova/src/browser_bundle.js --target=es2015 --sourcemap --keep-names",
+        "build:site": "npm run build:browser && npm run generate:static && cp nova/src/index.html dist-site/index.html && cp nova/src/browser_bundle.js nova/src/browser_bundle.js.map dist-site/",
+        "generate:static": "esbuild --bundle --platform=node --tsconfig=tsconfig.json scripts/generate_static.ts --outfile=scripts/generate_static_bundle.js && node scripts/generate_static_bundle.js",
         "test": "bazelisk test //...",
         "test-watch": "ibazel test //...",
         "test-only": "ibazel test",
