@@ -1,5 +1,5 @@
 import { ProjectileWeaponData, WeaponData } from 'novadatainterface/WeaponData';
-import { Emit, EmitNow, Entities, GetEntity, RunQueryFunction, UUID } from 'nova_ecs/arg_types';
+import { Emit, EmitNow, Entities, GetEntity, GetWorld, RunQueryFunction, UUID } from 'nova_ecs/arg_types';
 import { Angle } from 'nova_ecs/datatypes/angle';
 import { Position } from 'nova_ecs/datatypes/position';
 import { Vector } from 'nova_ecs/datatypes/vector';
@@ -24,6 +24,8 @@ import { FireSubs, OwnerComponent, SourceComponent, SubCounts, VulnerableToPD, W
 import { GameDataResource } from './game_data_resource';
 import { firstOrderWithFallback, Guidance, GuidanceComponent } from './guidance';
 import { ArmorComponent, ShieldComponent } from './health_plugin';
+import { damagerMayDamagePlayer } from './player_hostility';
+import { PlayerShipSelector } from './player_ship_plugin';
 import { ProjectileBlastHull, ProjectileComponent, ProjectileDataComponent } from './projectile_data';
 import { ReturnToQueueComponent } from './return_to_queue_plugin';
 import { SoundEvent } from './sound_event';
@@ -237,8 +239,10 @@ const ProjectileCollisionSystem = new System({
     name: 'ProjectileCollisionSystem',
     events: [CollisionEvent],
     args: [CollisionEvent, Entities, UUID, ProjectileDataComponent,
-        Optional(OwnerComponent), FireSubs, TimeResource, CreateTime, EmitNow] as const,
-    step(collision, entities, uuid, projectileData, owner, fireSubs, time, createTime, emitNow) {
+        Optional(OwnerComponent), FireSubs, TimeResource, CreateTime, EmitNow,
+        GetWorld] as const,
+    step(collision, entities, uuid, projectileData, owner, fireSubs, time,
+        createTime, emitNow, world) {
         const other = entities.get(collision.other);
         if (!other) {
             return;
@@ -259,7 +263,14 @@ const ProjectileCollisionSystem = new System({
             return;
         }
 
-        emitNow(DamagedEvent, { damage: projectileData.damage, damager: uuid }, [collision.other]);
+        // Stray fire must not hurt a neutral player: only damage from a
+        // ship whose government considers the player hostile is emitted
+        // (player_hostility.ts). The projectile's own detonation and
+        // lifecycle continue either way.
+        if (!other.components.has(PlayerShipSelector)
+            || damagerMayDamagePlayer(world, entities, owner?.owner)) {
+            emitNow(DamagedEvent, { damage: projectileData.damage, damager: uuid }, [collision.other]);
+        }
 
         if (!collision.initiator) {
             // We are hit by point defense
@@ -327,6 +338,12 @@ const ProjectileBlastSystem = new System({
                 turnBack: false,
                 velocity: new Vector(0, 0),
             });
+        // Carry the firing ship's ownership onto the blast so
+        // BlastCollisionSystem can attribute the splash damage (the
+        // neutral-player gate reads it).
+        if (owner) {
+            blast.addComponent(OwnerComponent, owner);
+        }
         entities.set(v4(), blast);
     }
 });

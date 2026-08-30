@@ -1,5 +1,5 @@
 import { BeamWeaponData, WeaponData } from 'novadatainterface/WeaponData';
-import { EmitNow, Entities, RunQueryFunction, UUID } from 'nova_ecs/arg_types';
+import { EmitNow, Entities, GetWorld, RunQueryFunction, UUID } from 'nova_ecs/arg_types';
 import { Component } from 'nova_ecs/component';
 import { Angle } from 'nova_ecs/datatypes/angle';
 import { Position } from 'nova_ecs/datatypes/position';
@@ -20,6 +20,8 @@ import { DamagedEvent } from './death_plugin';
 import { applyExitPoint, ExitPointData } from './exit_point';
 import { FireSubs, OwnerComponent, sampleInaccuracy, SourceComponent, WeaponConstructors, WeaponEntry } from './fire_weapon_plugin';
 import { zeroOrderGuidance } from './guidance';
+import { damagerMayDamagePlayer } from './player_hostility';
+import { PlayerShipSelector } from './player_ship_plugin';
 import { SoundEvent } from './sound_event';
 import { TargetComponent } from './target_component';
 import { WeaponsSystem } from './weapon_plugin';
@@ -164,9 +166,10 @@ const BeamCollisionSystem = new System({
     name: 'BeamCollisionSystem',
     events: [CollisionEvent],
     args: [CollisionEvent, Entities, Optional(OwnerComponent),
-        BeamDataComponent, CreateTime, EmitNow, TimeResource, UUID] as const,
+        BeamDataComponent, CreateTime, EmitNow, TimeResource, UUID,
+        GetWorld] as const,
     step(collision, entities, owner, beamData, fireTime, emitNow,
-        { time, delta_ms }, uuid) {
+        { time, delta_ms }, uuid, world) {
 
         const other = entities.get(collision.other);
         if (!other) {
@@ -174,6 +177,14 @@ const BeamCollisionSystem = new System({
         }
         const otherOwner = other.components.get(OwnerComponent);
         if (collision.other === owner?.owner || otherOwner?.owner === owner?.owner) {
+            return;
+        }
+
+        // Stray beams must not hurt a neutral player: only damage from a
+        // ship whose government considers the player hostile is emitted
+        // (player_hostility.ts).
+        if (other.components.has(PlayerShipSelector)
+            && !damagerMayDamagePlayer(world, entities, owner?.owner)) {
             return;
         }
 
