@@ -201,9 +201,8 @@ export function deactivateRanksOnCrime(state: PlayerState, govtId: string,
 
 // ränk flag 0x0004: the player destroyed/disabled a ship of `shipGovtId` —
 // ranks affiliated with that govt (or with one of its allies) go away.
-// NOTE: only the DESTROY half is wired today (combat_rating_plugin's
-// DeathEvent listener); the DISABLE half awaits a general disable event
-// outside the mission-ship worlds — wire it there when one lands.
+// Wired from combat_rating_plugin: DeathEvent (destroy) and DisabledEvent
+// (disable — zero armor, before the death explosion) both call this.
 export function deactivateRanksOnShipLoss(state: PlayerState, shipGovtId: string,
     env: LegalEnv): string[] {
     const shipGovt = env.government(shipGovtId);

@@ -24,6 +24,10 @@ import { GetEntity } from 'nova_ecs/arg_types';
 
 export const DeathEvent = new EcsEvent<Time>('DeathEvent');
 export const ZeroArmorEvent = new EcsEvent<Time>('ZeroArmorEvent');
+// The disabled-hulk window: armor hit 0 and the death explosion is still
+// pending (deathDelay). ExplodingComponent latches it to one event per
+// disable, like mission_ship_plugin's sticky disable flag.
+export const DisabledEvent = new EcsEvent<Time>('DisabledEvent');
 
 export const DamagedEvent = new EcsEvent<{ damage: WeaponDamage, damager: string, scale?: number }>('DamagedEvent');
 
@@ -69,15 +73,17 @@ const DamageSystem = new System({
 const ExplodingComponent = new Component<number>('ShipExplodingComponent');
 const ShipZeroArmorSystem = new System({
     name: 'ShipZeroArmorSystem',
-    args: [ShipDataComponent, ZeroArmorEvent, GetEntity] as const,
+    args: [ShipDataComponent, ZeroArmorEvent, GetEntity, UUID, Emit] as const,
     events: [ZeroArmorEvent],
-    step(ship, zeroArmorTime, {components}) {
+    step(ship, zeroArmorTime, {components}, uuid, emit) {
         if (components.has(ExplodingComponent)) {
             return;
         }
         // TODO: Normalize all times to ms
         const deathTime = ship.deathDelay * 1000 + zeroArmorTime.time;
         components.set(ExplodingComponent, deathTime);
+        // The ship is a disabled hulk until the death explosion fires.
+        emit(DisabledEvent, zeroArmorTime, [uuid]);
     }
 });
 
