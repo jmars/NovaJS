@@ -14,6 +14,7 @@ import { Entity } from "nova_ecs/entity";
 import { CollisionVulnerabilityComponent } from "./collision_interaction";
 import { AIConfigComponent, AIStateComponent } from "./npc_ai_plugin";
 import { GovernmentComponent, makeNpc } from "./npc_plugin";
+import { randInt } from "../player/pilot_files";
 
 export { GovernmentComponent };
 
@@ -38,6 +39,37 @@ export function rollDudeType(dude: DudeData, rng: () => number): string | null {
         roll -= entry.probability;
         if (roll < 0) {
             return entry.ship;
+        }
+    }
+    return null;
+}
+
+// FUN_0046b600/FUN_0046b4b0's total-weight pick: one rand(totalWeight)
+// draw walked cumulatively over the entries. Unlike rollDudeType (mïsn
+// percentage tables), the sÿst dûde-pair and dûde ship-class tables hold
+// raw counts, so the draw scales by the weight total. Entries with a null
+// value or a non-positive weight are excluded from the total (the binary
+// validates dûde ship classes against the shïp table before drawing).
+// Returns null — without drawing — when the total weight is under 1, which
+// makes that spawn produce no ship.
+export function weightedPick<T>(entries: Array<{ value: T; weight: number }>): T | null {
+    let total = 0;
+    for (const entry of entries) {
+        if (entry.value !== null && entry.weight > 0) {
+            total += entry.weight;
+        }
+    }
+    if (total < 1) {
+        return null;
+    }
+    let roll = randInt(total);
+    for (const entry of entries) {
+        if (entry.value === null || entry.weight <= 0) {
+            continue;
+        }
+        roll -= entry.weight;
+        if (roll < 0) {
+            return entry.value;
         }
     }
     return null;

@@ -1,10 +1,11 @@
 // Headless World specs for përs spawn + persistence, ported from the
 // binary's FUN_0041af90 ambient loop + FUN_004235c0: the one-draw
 // rand(1022) warp-in roll behind FUN_0041af90's rand(7) gate and its
-// determinism, the re-roll over later frames, the 64-slot population bound,
-// the LinkSyst and ActiveOn gates, the dead/deactivated persistence rule,
-// death/grudge bookkeeping, and what the spawned ship carries (name, AI
-// config, weapons, ShieldMod). Run with:
+// determinism, the arrival-burst cadence (the build burst covers jump-in;
+// plain frames never re-roll), the 64-slot population bound, the LinkSyst
+// and ActiveOn gates, the dead/deactivated persistence rule, death/grudge
+// bookkeeping, and what the spawned ship carries (name, AI config,
+// weapons, ShieldMod). Run with:
 //   npx esbuild --bundle --platform=node nova/src/nova_plugin/pers_test.ts \
 //       --outfile=/tmp/pers_test.js && node_modules/.bin/jasmine /tmp/pers_test.js
 
@@ -25,12 +26,14 @@ import { PlayerState } from "../player/player_state";
 import { PlayerStateResource } from "../player/player_state_component";
 import { randInt, seedRng } from "../player/pilot_files";
 import { AMBIENT_GATE, MAX_AMBIENT_SHIPS } from "./fleet_plugin";
+import { AmbientPlugin } from "./ambient_plugin";
+import { LandEvent } from "./planet_plugin";
 import { CollisionVulnerabilityComponent } from "./collision_interaction";
 import { DamagedEvent, DeathEvent } from "./death_plugin";
 import { AIConfigComponent } from "./npc_ai_plugin";
 import { DeathAISystem } from "./npc_plugin";
 import { OutfitsStateComponent } from "./outfit_plugin";
-import { PersComponent, PersPlugin } from "./pers_plugin";
+import { PersComponent, PersPlugin, PERS_TABLE_ROLL } from "./pers_plugin";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { ShipDataComponent } from "./ship_plugin";
 import { ShieldComponent } from "./health_plugin";
@@ -75,19 +78,22 @@ const DAMAGE = {
     passThroughShield: 0, knockback: 0,
 };
 
-// Simulates the plugin's per-pass draws (FUN_0041af90's gate: rand(7)
-// hitting the përs branch, then the FUN_004235c0 table draw and the uniform
-// pick on a hit) so the specs can pick state seeds with known multi-pass
-// outcomes. Returns the picked matching index for every hitting pass.
-function persPasses(seed: number, eligible: number, passes: number):
+// Simulates the population event's draws for a pers-only world
+// (FUN_0041af90's routing: rand(7) == 0 hitting the përs branch, then the
+// FUN_004235c0 table draw and the uniform pick on a hit; a miss draws the
+// flët gate — no flëts registered, no draws — and the dûde branch draws
+// nothing) so the specs can pick state seeds with known burst outcomes.
+// Returns the picked matching index for every hitting roll.
+function persPasses(seed: number, eligible: number, rolls: number):
     number[] {
     seedRng(seed);
     const picks: number[] = [];
-    for (let pass = 0; pass < passes; pass++) {
+    for (let roll = 0; roll < rolls; roll++) {
         if (randInt(AMBIENT_GATE) !== 0) {
-            continue; // flët/dude branches (owned by SpawnFleetsSystem)
+            randInt(AMBIENT_GATE); // flët gate (no flëts: no draws)
+            continue; // dûde branch (no dûde table: no draws)
         }
-        if (randInt(0x3fe) < eligible) {
+        if (randInt(PERS_TABLE_ROLL) < eligible) {
             picks.push(randInt(eligible));
         }
     }
@@ -107,12 +113,12 @@ function findSeed(eligible: number, wantHit: boolean): number {
     throw new Error("no pilot seed found for the requested draw side");
 }
 
-// A seed whose first four ambient passes (frames 0, 30, 60, 90) hit at
-// least twice on distinct përs, for the re-roll spec.
-function findMultiHitSeed(eligible: number, passes: number, minUnique: number):
+// A seed whose first `rolls` përs rolls hit at least `minUnique` distinct
+// përs, for the multi-event spec.
+function findMultiHitSeed(eligible: number, rolls: number, minUnique: number):
     number {
     for (let seed = 1; seed < 200_000; seed++) {
-        const picks = persPasses(seed, eligible, passes);
+        const picks = persPasses(seed, eligible, rolls);
         if (new Set(picks).size >= minUnique) {
             return seed;
         }
@@ -160,10 +166,16 @@ async function makeTestWorld(systemId: string, state: PlayerState,
     world.resources.set(SystemIdResource, systemId);
     world.resources.set(PlayerStateResource, state);
     world.resources.set(MissionEnvResource, env);
+    // PersPlugin carries the death/grudge bookkeeping; AmbientPlugin owns
+    // the population event (the build burst covers the jump-in).
     world.addPlugin(PersPlugin);
+    world.addPlugin(AmbientPlugin);
     // DeathAISystem is what PersDeathSystem must be able to read the dying
     // ship ahead of (it deletes the entity).
     world.addSystem(DeathAISystem);
+    // The populate-event systems run per emitted entity; tests that emit
+    // LandEvent target this one.
+    world.entities.set("player", new Entity("player"));
     for (let i = 0; i < preSpawns; i++) {
         world.entities.set(`pers-ship dummy ${i}`, new Entity("dummy"));
     }
@@ -184,6 +196,11 @@ async function makeTestWorld(systemId: string, state: PlayerState,
                 world.step();
                 await flush();
             }
+        },
+        // Queues one more population event, as a landing does.
+        land: () => {
+            world.emit(LandEvent, { id: "nova:130", uuid: "player" },
+                ["player"]);
         },
         persShips: () => [...world.entities.keys()].filter(key =>
             key.startsWith("pers-ship")),
@@ -278,34 +295,9 @@ describe("përs spawn", () => {
     });
 });
 
-describe("përs ambient govt gate", () => {
-    // nova:300's planet nova:130 (START) is Federation govt nova:128: the
-    // fixture graph makes Polaris (nova:130) its mutual enemy, Ally Govt
-    // (nova:129) its ally, Vell-os (nova:136) its classmate and Rebels
-    // (nova:141) unrelated. A system's ambient population is mostly its
-    // own government + civilians, so only those spawn here.
-    it("spawns përs of the system's own, allied, classmate or no government",
-        async () => {
-            for (const govt of [null, "nova:128", "nova:129", "nova:136"]) {
-                const { persShips } = await makeTestWorld(SYSTEM_ID,
-                    makePlayerState(SPAWN_SEED), { govt });
-                expect(persShips()).toEqual([`pers-ship ${PERS_ID}`]);
-            }
-        });
-
-    it("does not spawn enemy or unrelated-government përs", async () => {
-        for (const govt of ["nova:130" /* Polaris: mutual enemy */,
-            "nova:141" /* Rebels: unrelated */]) {
-            const { persShips } = await makeTestWorld(SYSTEM_ID,
-                makePlayerState(SPAWN_SEED), { govt });
-            expect(persShips()).toEqual([]);
-        }
-    });
-});
-
 describe("përs one-draw spawn model", () => {
-    it("spawns at most one përs per pass (one table draw)", async () => {
-        // FUN_004235c0 draws ONE slot per pass: a hit warps in exactly one
+    it("spawns at most one përs per roll (one table draw)", async () => {
+        // FUN_004235c0 draws ONE slot per roll: a hit warps in exactly one
         // përs no matter how many are eligible (here 60).
         const hit = findSeed(MANY_EXTRA + 1, true);
         const many = await makeTestWorld(SYSTEM_ID,
@@ -326,26 +318,30 @@ describe("përs one-draw spawn model", () => {
     });
 });
 
-describe("përs ambient re-roll over time", () => {
-    it("re-rolls the draw on later frames and lands the mirrored picks",
+describe("përs arrival-burst cadence", () => {
+    it("never re-rolls on plain frames; the next event rolls once more",
         async () => {
-            // Four passes at frames 0, 30, 60, 90 (makeTestWorld already
-            // ran frames 0 and 1; step 89 more to reach frame 90). All 60
-            // përs are eligible; matching order is insertion order (PERS_ID
-            // first, then nova:401..), so pick index 0 is PERS_ID and index
-            // i >= 1 is nova:(400 + i).
-            const PASSES = 4;
-            const seed = findMultiHitSeed(MANY_EXTRA + 1, PASSES, 2);
-            const { persShips, stepFrames } = await makeTestWorld(SYSTEM_ID,
-                makePlayerState(seed), {}, MANY_EXTRA);
+            // The build burst (jump-in) rolls once; 90 plain frames add
+            // nothing. One LandEvent (a landing) queues exactly one more
+            // roll. All 60 përs are eligible; matching order is insertion
+            // order (PERS_ID first, then nova:401..), so pick index 0 is
+            // PERS_ID and index i >= 1 is nova:(400 + i).
+            const ROLLS = 2;
+            const seed = findMultiHitSeed(MANY_EXTRA + 1, ROLLS, 2);
+            const { land, persShips, stepFrames } = await makeTestWorld(
+                SYSTEM_ID, makePlayerState(seed), {}, MANY_EXTRA);
             expect(persShips().length).toEqual(1);
 
-            await stepFrames(89);
+            await stepFrames(90);
+            expect(persShips().length).toEqual(1);
 
-            // The engine LCG advances across passes (seeded once per system
-            // entry), so later passes spawn more përs — exactly the ones
-            // the mirrored draw sequence picks.
-            const picks = persPasses(seed, MANY_EXTRA + 1, PASSES);
+            land();
+            await stepFrames(2);
+
+            // The two events' rolls are consecutive draws on the same
+            // stream: exactly the two distinct përs the mirrored sequence
+            // picks.
+            const picks = persPasses(seed, MANY_EXTRA + 1, ROLLS);
             expect(new Set(picks).size).toBeGreaterThanOrEqual(2);
             const persIdOf = (pick: number) => pick === 0
                 ? PERS_ID : `nova:${MANY_FIRST_RAW_ID + pick - 1}`;
@@ -357,7 +353,7 @@ describe("përs ambient re-roll over time", () => {
 
 describe("përs 64-slot bound", () => {
     it("does not spawn once 64 ambient ships are in the system", async () => {
-        // A seed whose first pass hits: the cap, not the draw, must block
+        // A seed whose first roll hits: the cap, not the draw, must block
         // the spawn.
         const { persShips } = await makeTestWorld(SYSTEM_ID,
             makePlayerState(SPAWN_SEED), {}, 0, MAX_AMBIENT_SHIPS);

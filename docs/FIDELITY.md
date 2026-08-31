@@ -30,12 +30,12 @@ audit) instead of after a user reports them.
 |---|---|---|---|---|
 | RNG (Park-Miller LCG) | `nova/src/player/pilot_files.ts` | FUN_004683b0 | VERIFIED | mult 0x41a7, mod 0x7fffffff, carry 0x80000001, state DAT_007ccdd8 |
 | Per-frame tick | — | FUN_0044aa70 | APPROXIMATED | port uses ECS `world.step()` |
-| Ambient ship manager | `nova/src/nova_plugin/fleet_plugin.ts`, `pers_plugin.ts` | FUN_0041af90 | APPROXIMATED | rand(7)/rand(7) gates per roll. AUDIT 2024: binary rolls only at POPULATION EVENTS (jump-in FUN_0044aa70@0044d84f/@0044fa91, FUN_00457580@004583d7/@00458a2d; landing/liftoff/boarding FUN_00486880@00486c5c, FUN_00486ed0@004870b1, FUN_00489d70@0048a75a), NOT per frame; each event runs sÿst+0x8e rolls (raw sÿst+0x64; stock 0-10, median 3). Port's every-30-frames pass over-spawns during a stay (continuous roll vs event-only) |
+| Ambient ship manager | `nova/src/nova_plugin/ambient_plugin.ts` | FUN_0041af90 | VERIFIED | Population-event driven: one burst per jump-in / landing / liftoff / boarding (PopulateResource pending counter; LandEvent/LiftoffEvent/BoardedEvent each queue one), running the sÿst+0x64 ambient rolls (stock 0-10, median 3) with the binary's single rand(7) routing: rand(7)==0 → përs (FUN_004235c0), else rand(7)==0 → flët (FUN_00425280), else dûde (FUN_0041ba80). sÿst Peripherals pairs run first at rand(100)+1 <= percent. No per-frame pass (the old every-30-frames port pass is removed) |
 | Fleet spawn | `fleet_plugin.ts` | FUN_00425280 / FUN_004259b0 | VERIFIED | rand(256); ship-class govt (param_3=-1); only 6/49 of rolls reach this branch |
 | Pers spawn | `pers_plugin.ts` | FUN_004235c0 | VERIFIED | rand(1022); pers.govt; only 1/7 of rolls reach this branch |
-| Dude branch | — | FUN_0041ba80 | NOT PORTED | 36/49 of ambient rolls (dominant). Weighted-picks a dûde entry from the sÿst's 8-pair list (FUN_0046b600), then a (ship class,count) pair from the dûde's 16 pairs (FUN_0046b4b0), spawns ONE ship with dûde govt (+2) + AI (+0, fallback shïp inherent AI). Searches slots 1..55 only |
+| Dude branch | `nova/src/nova_plugin/ambient_plugin.ts` (+`dude.ts` weightedPick, `SystemData.dudePairs`) | FUN_0041ba80 | PORTED | 36/49 of ambient rolls (dominant). Weighted-picks a dûde entry from the sÿst's 8-pair list (FUN_0046b600, raw counts as weights), then a (ship class,count) pair from the dûde's 16 pairs (FUN_0046b4b0), spawns ONE ship with dûde govt + AI (makeDudeShip). Slot search 1..55 → port counts ship entity keys (DUDE_SLOT_LIMIT=55). Draw counts inside the two weighted picks + the ±750 scatter are port-defined (binary internals not recovered) |
 | System arrival | — | FUN_00456480 | UNKNOWN | — |
-| Despawn (ambient) | — | FUN_004687b0 | NOT PORTED | ships silently removed when far (per-frame per-ship in ~41 AI fns; speed-scaled threshold, bytes 0x575800=100.0 / 0x575808=-0.241 / 0x5757f8=0.0), govt flag bit 0x800 → immediate remove, mission overrides; repopulation prunes all slots |
+| Despawn (ambient) | `nova/src/nova_plugin/ambient_plugin.ts` (AmbientDespawnSystem) | FUN_004687b0 | APPROXIMATED | ambient-keyed ships (fleet-ship/pers-ship/dude-ship) silently deleted beyond max(2400, top-speed×8) from the player each frame; binary's exact speed-scaled threshold has unrecoverable operand units (100.0/-0.241/0.0). Govt flag 0x800 immediate-remove case DEFERRED (flags/flags2 word mapping unresolved); mission overrides not modeled — mission-ship/escort keys are never despawned |
 
 ### Combat
 
@@ -69,8 +69,8 @@ audit) instead of after a user reports them.
 | Subsystem | Port file | Binary fn(s) | Status | Notes |
 |---|---|---|---|---|
 | Ship class inherent govt | `novaparse/.../ShipParse.ts` | ship+0x12 band | VERIFIED | 128-383 combat, 1128+ attr-only, 2128+ combat-2000 |
-| Fleet/pers ambient govt gate | `fleet_plugin.ts`, `pers_plugin.ts` | — | APPROXIMATED | system govt + ally/civilian bias. Root cause of melee is upstream: port draws global fleets/përs; binary draws the system's own dûdes (system-govt-owned), so the gate approximates what dûdes give for free |
-| System government | — | sÿst+8 | VERIFIED | runtime +8 ← raw sÿst+0x66 (0x80-based, -0x80 decoded at parse; stock: raw +0x66 = 128/147/...; 91 systems have -1) |
+| Fleet/pers ambient govt gate | — | — | REMOVED | the binary has no such gate; fleet/përs eligibility is pure linkSyst + activateOn + alive. Root cause of the old melee is fixed upstream: the dominant dûde branch now spawns the system's own dûdes with dûde govt, so fleet/përs stay at their true 6/49 + 1/7 share |
+| System government | `novadatainterface/SystemData.ts` (`government`), `novaparse/.../SystemParse.ts` | sÿst+8 | VERIFIED | runtime +8 ← raw sÿst+0x66, parsed to SystemData.government (0x80-based band, -1 = none; stock: raw +0x66 = 128/147/...; 91 systems have -1) |
 
 ### UI / spaceport
 
@@ -94,7 +94,7 @@ when audited.
    govt +2, flags/STR# +6, 16 ship classes +8, 16 counts +0x28 (74-byte runtime
    entry in DAT_005912cc, 512 entries). Fix = parse dûdes + sÿst pairs and
    replace global fleet/pers draw as the dominant ambient source.
-2. ~~**Dude branch FUN_0041ba80**~~ — fully decoded (see row above); still not
+2. ~~**Dude branch FUN_0041ba80**~~ — PORTED (ambient_plugin.ts; see table row). Sÿst dûde pairs / roll count / government / përs peripherals parse via SystResource + SystemParse.
    ported. Requires dûde + sÿst parsing (backlog item 1).
 3. ~~**Combat damage path** (projectile/beam/blast)~~ — AUDITED (see combat table): projectile friendly-fire + shield/armor order VERIFIED; beam decay, blast shape/self-blast/double-dip diverge (APPROXIMATED); prox-safety window has no verified binary counterpart.
 4. **AI targeting / retaliation radii** — AGGRESS_RADII inferred from Bible, not

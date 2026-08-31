@@ -1,11 +1,12 @@
-// Random flët spawning, ported from the binary's ambient ship manager
-// FUN_0041af90 and its fleet spawn FUN_00425280/FUN_004259b0: every flët
-// whose LinkSyst matches the system and whose ActivateOn test passes is
-// eligible, ONE index is drawn into the 256-slot flët table per pass, and
-// if the drawn slot is eligible that flët (lead ship + escort groups) warps
-// in as plain NPCs. The binary reaches this roll from the per-frame game
-// tick, so the draw re-runs while the player stays in the system — ships
-// keep appearing over time, not only on arrival.
+// The flët branch of the ambient population event, ported from the
+// binary's FUN_00425280/FUN_004259b0: every flët whose LinkSyst matches
+// the system and whose ActivateOn test passes is eligible, ONE index is
+// drawn into the 256-slot flët table per flët roll, and if the drawn slot
+// is eligible that flët (lead ship + escort groups) warps in as plain
+// NPCs. The roll is reached from ambient_plugin's PopulateSystem at each
+// population event (jump-in, landing, liftoff, boarding) — the binary runs
+// FUN_0041af90 only at those, never per frame. 6/49 of ambient rolls take
+// this branch (rand(7) misses the përs branch, then rand(7) == 0).
 //
 // Flagged approximation: flëts are atmosphere-only in EV Nova, approximated
 // by requiring at least one inhabited planet (spöb 0x20 cleared) in the
@@ -17,8 +18,7 @@ import { FleetData } from "novadatainterface/FleetData";
 import { GameDataInterface } from "novadatainterface/GameDataInterface";
 import { SystemData } from "novadatainterface/SystemData";
 import { evaluateTest, parseTest, TestContext } from "novadatainterface/expressions";
-import { Entities, GetWorld, RunQuery, RunQueryFunction } from "nova_ecs/arg_types";
-import { AsyncSystem } from "nova_ecs/async_system";
+import { Entities, RunQuery, RunQueryFunction } from "nova_ecs/arg_types";
 import { Entity } from "nova_ecs/entity";
 import { EntityMap } from "nova_ecs/entity_map";
 import { Position } from "nova_ecs/datatypes/position";
@@ -26,10 +26,8 @@ import { MovementStateComponent } from "nova_ecs/plugins/movement_plugin";
 import { Plugin } from "nova_ecs/plugin";
 import { Query } from "nova_ecs/query";
 import { Resource } from "nova_ecs/resource";
-import { SingletonComponent } from "nova_ecs/world";
 import { MissionEnv } from "../missions/mission_state_machine";
 import { fleetQuoteFromSet } from "../spaceport/fleet_quote";
-import { MissionEnvResource } from "../missions/mission_plugin";
 import {
     decodeSystemFilter,
     globalId,
@@ -37,67 +35,49 @@ import {
     SystemMatchContext,
     systemMatchesSystemFilter,
 } from "../missions/stellar_filter";
-import {
-    govtsAreAllies,
-    govtsAreClassmates,
-    govtsAreEnemies,
-} from "../player/legal_status";
 import { ControlBits, PlayerState } from "../player/player_state";
-import { PlayerStateResource } from "../player/player_state_component";
-import { randInt, seedRng } from "../player/pilot_files";
+import { randInt } from "../player/pilot_files";
 import { makeDudeShip } from "./dude";
-import { GameDataResource } from "./game_data_resource";
 import { PlayerShipSelector } from "./player_ship_plugin";
-import { SystemIdResource } from "./system_id_resource";
 
 // The flët table in the binary has 256 slots and the spawn roll draws one
 // index into it (FUN_00425280: idx = rand(0x100); spawn iff slot idx is
 // eligible). The port's data layer does not expose engine table slots, so
 // the draw is composed as the same probability: a hit needs
 // rand(256) < eligibleCount, then a uniform pick among the eligible flëts.
-const FLEET_TABLE_SLOTS = 0x100;
+export const FLEET_TABLE_SLOTS = 0x100;
 
-// FUN_0041af90 gates each ambient slot roll with rand(7) draws: rand(7)==0
-// takes the përs branch (FUN_004235c0, SpawnPersSystem), otherwise
-// rand(7)==0 takes the flët branch (this system), otherwise the dude-table
-// branch (FUN_0041ba80, not ported). The port splits the branches across
-// the two spawn systems, each drawing the gates of its own branch.
+// FUN_0041af90 gates each ambient roll with rand(7) draws: rand(7)==0
+// takes the përs branch (FUN_004235c0), otherwise rand(7)==0 takes the
+// flët branch (this module's spawnFleetRoll in ambient_plugin), otherwise
+// the dûde branch (FUN_0041ba80, also ambient_plugin).
 export const AMBIENT_GATE = 7;
-
-// The binary rolls the ambient gates every frame for each sÿst ambient
-// slot (the Count field at sÿst+0x8e — data this port does not model).
-// The port runs ONE virtual slot pass every AMBIENT_ROLL_INTERVAL_FRAMES
-// frames so the sparse draw stays sparse.
-export const AMBIENT_ROLL_INTERVAL_FRAMES = 30;
 
 // The binary keeps every ship of a system in 64 fixed ship slots
 // (FUN_0041af90's slot loop, count 0x40): an ambient spawn gives up when
-// no slot is free. The port bounds its ambient population the same way.
+// no slot is free. The port bounds its fleet/përs population the same way.
 export const MAX_AMBIENT_SHIPS = 0x40;
 
 // Shared flag: the engine LCG stream is seeded once per system entry from
-// the pilot's rngSeed and then runs on continuously across ambient passes
-// (the engine's stream is global and continuous; see pilot_files).
+// the pilot's rngSeed and then runs on continuously across population
+// events (the engine's stream is global and continuous; see pilot_files).
+// Owned by AmbientPlugin.
 export const AmbientSeedResource =
     new Resource<{ val: boolean }>('AmbientSeedResource');
 
-// Frames until this system's next ambient slot pass. 0 rolls immediately,
-// so a freshly built system world still spawns on entry.
-const FleetRollResource =
-    new Resource<{ framesUntilRoll: number }>('FleetRollResource');
-
 // Hyperspace-entry quotes of the fleets spawned on this entry, for a future
 // message surface to display (there is none yet). A quote is appended per
-// spawning pass.
+// spawning roll.
 export const FleetQuotesResource = new Resource<string[]>('FleetQuotesResource');
 
 // The binary counts a spawn against the system's 64 ship slots. The port
-// counts the ships its two ambient systems created (the fleet-ship /
-// pers-ship entity keys), which is the population they own.
+// counts the ships the ambient systems created (the fleet-ship / pers-ship
+// / dude-ship entity keys), which is the population they own.
 export function ambientShipCount(entities: EntityMap): number {
     let count = 0;
     for (const key of entities.keys()) {
-        if (key.startsWith("fleet-ship ") || key.startsWith("pers-ship ")) {
+        if (key.startsWith("fleet-ship ") || key.startsWith("pers-ship ")
+            || key.startsWith("dude-ship ")) {
             count++;
         }
     }
@@ -124,149 +104,9 @@ export function warpInAt(ship: Entity, origin: Position): void {
     ship.components.set(MovementStateComponent, movement);
 }
 
-const SpawnFleetsSystem = new AsyncSystem({
-    name: 'SpawnFleetsSystem',
-    args: [GameDataResource, SystemIdResource, Entities, GetWorld,
-        FleetRollResource, AmbientSeedResource, RunQuery,
-        SingletonComponent] as const,
-    exclusive: true,
-    async step(gameData, systemId, entities, world, roll, seeded, runQuery) {
-        // Cooldown (the resource's immer patches land on the next run, so
-        // the count is off by at most one frame).
-        if (roll.framesUntilRoll > 0) {
-            roll.framesUntilRoll--;
-            return;
-        }
-        roll.framesUntilRoll = AMBIENT_ROLL_INTERVAL_FRAMES - 1;
-
-        const state = world.resources.get(PlayerStateResource);
-        const env = world.resources.get(MissionEnvResource);
-        if (!state || !env) {
-            return;
-        }
-        // One seed per system entry; every later pass advances the same
-        // stream, so consecutive rolls differ (the engine's stream is
-        // global and continuous; see pilot_files).
-        if (!seeded.val) {
-            seedRng(state.rngSeed);
-            seeded.val = true;
-        }
-        const ids = await gameData.ids;
-        if (ids.Fleet.length === 0) {
-            return;
-        }
-        const systemData = env.system(systemId);
-        if (!systemData) {
-            return;
-        }
-        // Flëts are atmosphere-only: no inhabited planet, no fleet.
-        if (!systemHasInhabitedPlanet(systemData, env)) {
-            return;
-        }
-
-        // FUN_0041af90's ambient branch, flët slot: reach the table draw
-        // only when the first rand(7) misses the përs branch and the second
-        // hits the flët branch.
-        if (randInt(AMBIENT_GATE) === 0) {
-            return;
-        }
-        if (randInt(AMBIENT_GATE) !== 0) {
-            return;
-        }
-        // 64-slot bound: with no free slot, the binary's spawn gives up.
-        if (ambientShipCount(entities) >= MAX_AMBIENT_SHIPS) {
-            return;
-        }
-        const quotes: string[] = [];
-
-        // FUN_00425280: scan every flët for eligibility (exists, LinkSyst
-        // matches, ActivateOn passes), then draw ONE index into the 256-slot
-        // flët table; if the drawn slot is eligible, that whole flët (lead
-        // ship + escort groups) warps in. One draw per pass.
-        const matching: Array<{ fleetId: string; fleet: FleetData }> = [];
-        for (const fleetId of ids.Fleet) {
-            let fleet: FleetData;
-            try {
-                fleet = await gameData.data.Fleet.get(fleetId);
-            }
-            catch {
-                continue;
-            }
-            if (fleetActive(fleet, state, systemId, systemData, env)) {
-                matching.push({ fleetId, fleet });
-            }
-        }
-
-        // One shared LCG stream, seeded once per system entry above; this
-        // pass's draws advance it (see pilot_files).
-        if (randInt(FLEET_TABLE_SLOTS) < matching.length) {
-            const { fleet } = matching[randInt(matching.length)];
-            quotes.push(...await spawnFleet(gameData, env, entities, fleet,
-                playerPosition(runQuery)));
-        }
-
-        const fleetQuotes = world.resources.get(FleetQuotesResource);
-        if (fleetQuotes) {
-            fleetQuotes.push(...quotes);
-        }
-    },
-});
-
-// At least one of the system's planets must be inhabited (spöb flag 0x20
-// cleared) for a flët to spawn.
-function systemHasInhabitedPlanet(systemData: SystemData,
-    env: MissionEnv): boolean {
-    return systemData.planets.some(id => env.planet(id)?.inhabited ?? false);
-}
-
-// The system's government, from its planets' spöb gövts: the first
-// inhabited planet's govt wins, falling back to any planet's govt. Null
-// when no planet has one (an independent system).
-export function systemGovernmentId(systemData: SystemData,
-    env: MissionEnv): string | null {
-    let fallback: string | null = null;
-    for (const id of systemData.planets) {
-        const planet = env.planet(id);
-        if (!planet || planet.govt === null) {
-            continue;
-        }
-        if (planet.inhabited) {
-            return planet.govt;
-        }
-        fallback ??= planet.govt;
-    }
-    return fallback;
-}
-
-// Ambient-population govt gate: a system's ambient ships are mostly its OWN
-// government plus civilians (in EV Nova hostile warships are the rare
-// exception, not the norm), so a pers/flët is eligible here only when its
-// government is the system's, neutral (null), or an ally/classmate of the
-// system's — an enemy or unrelated government's 'any system' entries do
-// not blanket-spawn hostile ships into every system. Unresolvable
-// governments stay eligible (fail open, like LinkSyst -1).
-export function ambientGovtEligible(govtId: string | null,
-    systemGovtId: string | null, env: MissionEnv): boolean {
-    if (govtId === null || systemGovtId === null || govtId === systemGovtId) {
-        return true;
-    }
-    const govt = env.government(govtId);
-    const systemGovt = env.government(systemGovtId);
-    if (!govt || !systemGovt) {
-        return true;
-    }
-    if (govtsAreEnemies(govt, systemGovt)
-        || govtsAreEnemies(systemGovt, govt)) {
-        return false;
-    }
-    return govtsAreAllies(govt, systemGovt)
-        || govtsAreAllies(systemGovt, govt)
-        || govtsAreClassmates(govt, systemGovt);
-}
-
 // LinkSyst -1 matches any system; otherwise it uses the mïsn system filter
 // codes (specific ids, the near bands and the govt relation bands).
-function fleetActive(fleet: FleetData, state: PlayerState, systemId: string,
+export function fleetActive(fleet: FleetData, state: PlayerState, systemId: string,
     systemData: SystemData, env: MissionEnv): boolean {
     if (fleet.linkSyst !== -1) {
         const originSystemId = (state.lastStellar !== null
@@ -303,16 +143,15 @@ function fleetActive(fleet: FleetData, state: PlayerState, systemId: string,
             return false;
         }
     }
-    // The ambient-population govt gate (see ambientGovtEligible): the
-    // system's population is mostly its own government + civilians.
-    return ambientGovtEligible(fleet.govt,
-        systemGovernmentId(systemData, env), env);
+    // Flëts are atmosphere-only (flagged approximation): at least one of
+    // the system's planets must be inhabited (spöb flag 0x20 cleared).
+    return systemData.planets.some(id => env.planet(id)?.inhabited ?? false);
 }
 
 // Spawns the flët's ships and returns its hyperspace-entry quote text
 // (empty when the flët has no Quote STR# or the set is missing). All rolls
 // use the shared engine LCG (randInt), like FUN_004259b0.
-async function spawnFleet(gameData: GameDataInterface, env: MissionEnv,
+export async function spawnFleet(gameData: GameDataInterface, env: MissionEnv,
     entities: EntityMap, fleet: FleetData, origin: Position):
     Promise<string[]> {
     const ships: string[] = [];
@@ -375,9 +214,6 @@ async function spawnFleet(gameData: GameDataInterface, env: MissionEnv,
 export const FleetPlugin: Plugin = {
     name: 'FleetPlugin',
     build(world) {
-        world.resources.set(FleetRollResource, { framesUntilRoll: 0 });
-        world.resources.set(AmbientSeedResource, { val: false });
         world.resources.set(FleetQuotesResource, []);
-        world.addSystem(SpawnFleetsSystem);
     },
 };

@@ -70,7 +70,10 @@ export const PLANETS = new Map<string, PlanetData>(
         .map(planet => [planet.id, planet]));
 
 function makeSystem(id: string, links: string[], planets: string[]): SystemData {
-    return { ...getDefaultSystemData(), id, links, planets };
+    // ambientRollCount 1: fixture systems make one ambient roll per
+    // population event (the specs that drive AmbientPlugin mirror it; the
+    // data-faithful default stays 0 in getDefaultSystemData).
+    return { ...getDefaultSystemData(), id, links, planets, ambientRollCount: 1 };
 }
 
 export const SYSTEMS = new Map<string, SystemData>([

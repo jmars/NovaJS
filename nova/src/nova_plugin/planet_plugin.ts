@@ -46,6 +46,11 @@ const PlanetTargetProvider = Provide({
 
 export const LandEvent = new EcsEvent<{ id: string, uuid: string }>('LandEvent');
 
+// The player's ship lifted off and returned to the system world (emitted
+// by the display LandSystem's promise tail, where the ship entity is
+// re-added). FUN_00486ed0@004870b1 repopulates ambient ships on liftoff.
+export const LiftoffEvent = new EcsEvent<{ id: string, uuid: string }>('LiftoffEvent');
+
 const AttemptLandingSystem = new System({
     name: 'AttemptLandingSystem',
     events: [ControlStateEvent] as const,

@@ -1,12 +1,12 @@
-// Headless World specs for the flët ambient spawn draw and hyperspace-entry
-// quote (ported from the binary's FUN_0041af90 ambient loop +
-// FUN_00425280/FUN_004259b0): a flët only spawns in a system with at least
-// one inhabited planet, ONE index is drawn into the 256-slot flët table per
-// ambient pass behind FUN_0041af90's rand(7)/rand(7) gates, the passes
-// re-roll while the world steps (not only on arrival), the population is
-// bounded by the binary's 64 ship slots, and the Quote STR# (with '#'
-// replaced by random digits) lands on FleetQuotesResource for a future
-// message surface. Run with:
+// Headless World specs for the flët branch of the ambient population event
+// (ported from the binary's FUN_00425280/FUN_004259b0): a flët only spawns
+// in a system with at least one inhabited planet, ONE index is drawn into
+// the 256-slot flët table per flët roll behind FUN_0041af90's rand(7)
+// gates, the rolls run once per population event (the build burst covers
+// jump-in; plain frames never re-roll), the population is bounded by the
+// binary's 64 ship slots, and the Quote STR# (with '#' replaced by random
+// digits) lands on FleetQuotesResource for a future message surface. Run
+// with:
 //   npx esbuild --bundle --platform=node nova/src/nova_plugin/fleet_plugin_test.ts \
 //       --outfile=/tmp/fleet_plugin_test.js && node_modules/.bin/jasmine /tmp/fleet_plugin_test.js
 
@@ -15,26 +15,18 @@ import { MockGameData } from "novadatainterface/MockGameData";
 import { FleetData, getDefaultFleetData } from "novadatainterface/FleetData";
 import { getDefaultStringSetData } from "novadatainterface/StringSetData";
 import { getDefaultShipData } from "novadatainterface/ShipData";
-import { getDefaultSystemData } from "novadatainterface/SystemData";
 import { Entity } from "nova_ecs/entity";
 import { World } from "nova_ecs/world";
 import { randInt, seedRng } from "../player/pilot_files";
+import { AMBIENT_GATE, FleetPlugin, FleetQuotesResource, MAX_AMBIENT_SHIPS } from "./fleet_plugin";
+import { AmbientPlugin } from "./ambient_plugin";
+import { LandEvent } from "./planet_plugin";
 import { GameDataResource } from "./game_data_resource";
 import { SystemIdResource } from "./system_id_resource";
-import {
-    ambientGovtEligible,
-    AMBIENT_GATE,
-    FleetPlugin,
-    FleetQuotesResource,
-    MAX_AMBIENT_SHIPS,
-    systemGovernmentId,
-} from "./fleet_plugin";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import {
-    makePlanet,
     makePlayerState,
     makeTestEnv,
-    PLANETS,
     SYSTEMS,
 } from "../missions/test_fixtures";
 import { PlayerState } from "../player/player_state";
@@ -58,7 +50,8 @@ const FLEET = {
 };
 
 // Both gate fixtures share the fixtures map with the other specs, so use
-// fresh system ids that nothing else references.
+// fresh system ids that nothing else references. The fixture systems make
+// one ambient roll per population event (test_fixtures makeSystem).
 SYSTEMS.set(BARREN_SYSTEM, {
     ...SYSTEMS.get("nova:300")!,
     id: BARREN_SYSTEM,
@@ -78,21 +71,23 @@ async function flush(): Promise<void> {
     }
 }
 
-// Simulates the plugin's per-pass draws (FUN_0041af90's gates: rand(7)
-// missing the përs branch then rand(7) hitting the flët branch, then the
-// FUN_00425280 table draw and the uniform pick on a hit) so the specs can
-// pick state seeds with known multi-pass outcomes. Returns the picked
-// matching index for every hitting pass.
-function fleetPasses(seed: number, eligible: number, passes: number):
+// Simulates the population event's draws for a fleet-only world
+// (FUN_0041af90's routing: rand(7) missing the përs branch — empty here,
+// no draws — then rand(7) hitting the flët branch, then the FUN_00425280
+// table draw and the uniform pick on a hit; the dûde branch has no dûde
+// table and draws nothing) so the specs can pick state seeds with known
+// burst outcomes. Returns the picked matching index for every hitting
+// roll.
+function fleetRolls(seed: number, eligible: number, rolls: number):
     number[] {
     seedRng(seed);
     const picks: number[] = [];
-    for (let pass = 0; pass < passes; pass++) {
+    for (let roll = 0; roll < rolls; roll++) {
         if (randInt(AMBIENT_GATE) === 0) {
-            continue; // përs branch (owned by SpawnPersSystem)
+            continue; // përs branch (no përs registered: no draws)
         }
         if (randInt(AMBIENT_GATE) !== 0) {
-            continue; // dude branch (not ported)
+            continue; // dûde branch (no dûde table: no draws)
         }
         if (randInt(0x100) < eligible) {
             picks.push(randInt(eligible));
@@ -102,7 +97,7 @@ function fleetPasses(seed: number, eligible: number, passes: number):
 }
 
 function spawnHit(seed: number, eligible: number): boolean {
-    return fleetPasses(seed, eligible, 1).length > 0;
+    return fleetRolls(seed, eligible, 1).length > 0;
 }
 
 function findSeed(eligible: number, wantHit: boolean): number {
@@ -114,20 +109,20 @@ function findSeed(eligible: number, wantHit: boolean): number {
     throw new Error("no pilot seed found for the requested draw side");
 }
 
-// A seed whose first four ambient passes (frames 0, 30, 60, 90) hit at
-// least twice on distinct flëts, for the re-roll spec.
-function findMultiHitSeed(eligible: number, passes: number, minUnique: number):
+// A seed whose first `rolls` flët rolls hit at least `minUnique` distinct
+// flëts, for the multi-event spec.
+function findMultiHitSeed(eligible: number, rolls: number, minUnique: number):
     number {
     for (let seed = 1; seed < 200_000; seed++) {
-        const picks = fleetPasses(seed, eligible, passes);
+        const picks = fleetRolls(seed, eligible, rolls);
         if (new Set(picks).size >= minUnique) {
             return seed;
         }
     }
-    throw new Error("no pilot seed found for the requested multi-pass draw");
+    throw new Error("no pilot seed found for the requested multi-roll draw");
 }
 
-// Builds a system world for the given system id and runs one spawn pass.
+// Builds a system world for the given system id and runs the build burst.
 // `fleets` replaces the default single-fleet fixture (each spawns its lead
 // ship only, so one fleet-ship entity per spawned flët). `preSpawns` adds
 // that many dummy fleet-ship entities before the first step (for the
@@ -155,7 +150,13 @@ async function makeTestWorld(systemId: string,
     world.resources.set(SystemIdResource, systemId);
     world.resources.set(PlayerStateResource, state);
     world.resources.set(MissionEnvResource, env);
+    // FleetPlugin carries the quotes resource; AmbientPlugin owns the
+    // population event (the build burst covers the jump-in).
     world.addPlugin(FleetPlugin);
+    world.addPlugin(AmbientPlugin);
+    // The populate-event systems run per emitted entity; tests that emit
+    // LandEvent target this one.
+    world.entities.set("player", new Entity("player"));
     for (let i = 0; i < preSpawns; i++) {
         world.entities.set(`fleet-ship dummy ${i}`, new Entity("dummy"));
     }
@@ -175,6 +176,11 @@ async function makeTestWorld(systemId: string,
                 world.step();
                 await flush();
             }
+        },
+        // Queues one more population event, as a landing does.
+        land: () => {
+            world.emit(LandEvent, { id: "nova:130", uuid: "player" },
+                ["player"]);
         },
         fleetShips: () => [...world.entities.keys()].filter(key =>
             key.startsWith("fleet-ship")),
@@ -217,8 +223,8 @@ describe("fleet one-draw spawn model", () => {
         }]);
     }
 
-    it("spawns at most one flët per pass (one table draw)", async () => {
-        // FUN_00425280 draws ONE slot per pass: a hit warps in exactly one
+    it("spawns at most one flët per flët roll (one table draw)", async () => {
+        // FUN_00425280 draws ONE slot per roll: a hit warps in exactly one
         // whole flët no matter how many are eligible.
         const hit = makePlayerState(findSeed(MANY, true));
         const { fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
@@ -238,7 +244,7 @@ describe("fleet one-draw spawn model", () => {
     });
 });
 
-describe("fleet ambient re-roll over time", () => {
+describe("fleet arrival-burst cadence", () => {
     // Ten matching flëts; ids are nova:910..919 in matching order, so pick
     // index i is fleet nova:(910 + i) (MockGameData exposes ids in map
     // insertion order).
@@ -254,23 +260,27 @@ describe("fleet ambient re-roll over time", () => {
         }]);
     }
 
-    it("re-rolls the draw on later frames and lands the mirrored picks",
+    it("never re-rolls on plain frames; the next event rolls once more",
         async () => {
-            // Four passes at frames 0, 30, 60, 90 (makeTestWorld already
-            // ran frames 0 and 1; step 89 more to reach frame 90).
-            const PASSES = 4;
+            // The build burst (jump-in) rolls once; 90 plain frames add
+            // nothing. One LandEvent (a landing) queues exactly one more
+            // roll, landing the flët the mirrored draw picks.
             const seed = makePlayerState(
-                findMultiHitSeed(MANY, PASSES, 2)).rngSeed;
-            const { fleetShips, stepFrames } = await makeTestWorld(
+                findMultiHitSeed(MANY, 2, 2)).rngSeed;
+            const { land, fleetShips, stepFrames } = await makeTestWorld(
                 INHABITED_SYSTEM, manyFleets, makePlayerState(seed));
             expect(fleetShips().length).toEqual(1);
 
-            await stepFrames(89);
+            await stepFrames(90);
+            expect(fleetShips().length).toEqual(1);
 
-            // The engine LCG advances across passes (seeded once per system
-            // entry), so later passes spawn more flëts — exactly the ones
-            // the mirrored draw sequence picks.
-            const picks = fleetPasses(seed, MANY, PASSES);
+            land();
+            await stepFrames(2);
+
+            // The two events' rolls are consecutive draws on the same
+            // stream: exactly the two distinct flëts the mirrored
+            // sequence picks.
+            const picks = fleetRolls(seed, MANY, 2);
             expect(new Set(picks).size).toBeGreaterThanOrEqual(2);
             const expected = [...new Set(picks)]
                 .map(pick => `fleet-ship nova:${910 + pick} 0`).sort();
@@ -280,7 +290,7 @@ describe("fleet ambient re-roll over time", () => {
 
 describe("fleet 64-slot bound", () => {
     it("does not spawn once 64 ambient ships are in the system", async () => {
-        // A seed whose first pass hits: the cap, not the draw, must block
+        // A seed whose first roll hits: the cap, not the draw, must block
         // the spawn.
         const hit = makePlayerState(findSeed(1, true));
         const { fleetShips, quotes } = await makeTestWorld(INHABITED_SYSTEM,
@@ -308,72 +318,5 @@ describe("fleet hyperspace-entry quote", () => {
         const first = await makeTestWorld(INHABITED_SYSTEM, undefined, state);
         const second = await makeTestWorld(INHABITED_SYSTEM, undefined, state);
         expect(first.quotes()).toEqual(second.quotes());
-    });
-});
-
-describe("flët ambient govt gate", () => {
-    // INHABITED_SYSTEM's planet nova:130 (START) is Federation govt
-    // nova:128: Ally Govt (nova:129) is its ally, Polaris (nova:130) its
-    // mutual enemy, Rebels (nova:141) unrelated. A system's ambient
-    // population is mostly its own government + civilians.
-    it("spawns flëts of the system's own, allied or neutral government",
-        async () => {
-            for (const govt of [null, "nova:128", "nova:129"]) {
-                const { fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
-                    [[FLEET_ID, { ...FLEET, govt }]],
-                    makePlayerState(findSeed(1, true)));
-                expect(fleetShips()).toEqual([`fleet-ship ${FLEET_ID} 0`]);
-            }
-        });
-
-    it("does not spawn enemy or unrelated-government flëts", async () => {
-        for (const govt of ["nova:130", "nova:141"]) {
-            const { fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
-                [[FLEET_ID, { ...FLEET, govt }]],
-                makePlayerState(findSeed(1, true)));
-            expect(fleetShips()).toEqual([]);
-        }
-    });
-});
-
-describe("ambient system-government resolution", () => {
-    // A govt outpost with no inhabited planet still names the system's
-    // government (the fallback rule).
-    const OUTPOST = makePlanet("nova:142", "Lifeless Outpost", [6, 6],
-        { govt: "nova:130", inhabited: false });
-    PLANETS.set(OUTPOST.id, OUTPOST);
-
-    it("takes the inhabited planet's govt, falling back to any planet govt",
-        () => {
-            const { env } = makeTestEnv();
-            // nova:302: Earth (inhabited, govt nova:128) then Vell-os
-            // Prime (govt nova:136) — the first inhabited govt wins.
-            expect(systemGovernmentId(SYSTEMS.get("nova:302")!, env))
-                .toEqual("nova:128");
-            // BARREN_SYSTEM holds only Barren Rock (nova:140, no govt).
-            expect(systemGovernmentId(SYSTEMS.get(BARREN_SYSTEM)!, env))
-                .toBeNull();
-
-            expect(systemGovernmentId({
-                ...getDefaultSystemData(),
-                id: "outpost-system",
-                links: [],
-                planets: ["nova:140", OUTPOST.id],
-            }, env)).toEqual("nova:130");
-        });
-
-    it("eligibility: system govt, civilians, allies and classmates pass;"
-        + " enemies and unrelated govts do not", () => {
-        const { env } = makeTestEnv();
-        const fed = "nova:128";
-        expect(ambientGovtEligible(null, fed, env)).toBeTrue();
-        expect(ambientGovtEligible(fed, fed, env)).toBeTrue();
-        expect(ambientGovtEligible("nova:129", fed, env)).toBeTrue();
-        expect(ambientGovtEligible("nova:136", fed, env)).toBeTrue();
-        expect(ambientGovtEligible("nova:130", fed, env)).toBeFalse();
-        expect(ambientGovtEligible("nova:141", fed, env)).toBeFalse();
-        // No resolvable system govt: unrestricted.
-        expect(ambientGovtEligible("nova:130", null, env)).toBeTrue();
-        expect(ambientGovtEligible("nova:130", "nova:999", env)).toBeTrue();
     });
 });

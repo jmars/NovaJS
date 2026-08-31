@@ -1,15 +1,11 @@
-// Përs (AI people) spawn + persistence, ported from the binary's ambient
-// ship manager FUN_0041af90 and its përs spawn FUN_004235c0: every përs
-// whose LinkSyst matches the system, whose ActiveOn test passes and who is
-// neither dead nor deactivated is eligible; ONE index is drawn with
-// rand(1022) into the 1024-slot përs table per pass, and if the drawn slot
-// is eligible that përs warps in as a dude-style NPC carrying the përs's
-// own name (target display), shields (ShieldMod) and AI config. The binary
-// reaches this roll from the per-frame game tick, so the draw re-runs while
-// the player stays in the system. Dying marks the përs dead in PlayerState
-// (never respawns); being damaged by the player latches a persistent grudge
-// (flag 0x0001) that makes it hunt the player regardless of the Aggress
-// radius.
+// Përs (AI people) spawn support + persistence. The warp-in roll itself
+// moved to ambient_plugin's PopulateSystem (the binary routes one rand(7)
+// per ambient roll to FUN_004235c0's përs draw, and the sÿst Peripherals
+// pairs at rand(100)+1 <= percent); this module keeps what that draw
+// spawns: the eligibility test, the ship builder and the death/grudge
+// bookkeeping. Dying marks the përs dead in PlayerState (never respawns);
+// being damaged by the player latches a persistent grudge (flag 0x0001)
+// that makes it hunt the player regardless of the Aggress radius.
 
 import { PersData } from "novadatainterface/PersData";
 import { GameDataInterface } from "novadatainterface/GameDataInterface";
@@ -17,18 +13,15 @@ import { OutfitData } from "novadatainterface/OutiftData";
 import { ShipData } from "novadatainterface/ShipData";
 import { SystemData } from "novadatainterface/SystemData";
 import { evaluateTest, parseTest, TestContext } from "novadatainterface/expressions";
-import { Entities, GetWorld, RunQuery, UUID } from "nova_ecs/arg_types";
-import { AsyncSystem } from "nova_ecs/async_system";
+import { GetWorld, UUID, RunQuery } from "nova_ecs/arg_types";
 import { Component } from "nova_ecs/component";
 import { Position } from "nova_ecs/datatypes/position";
 import { EntityMap } from "nova_ecs/entity_map";
 import { Plugin } from "nova_ecs/plugin";
-import { Resource } from "nova_ecs/resource";
 import { Query } from "nova_ecs/query";
 import { System } from "nova_ecs/system";
-import { SingletonComponent } from "nova_ecs/world";
 import { MissionEnv } from "../missions/mission_state_machine";
-import { MissionEnvResource, queuePlayerStateSave } from "../missions/mission_plugin";
+import { queuePlayerStateSave } from "../missions/mission_plugin";
 import {
     decodeSystemFilter,
     globalId,
@@ -38,21 +31,9 @@ import {
 } from "../missions/stellar_filter";
 import { ControlBits, PlayerState } from "../player/player_state";
 import { PlayerStateResource } from "../player/player_state_component";
-import { randInt, seedRng } from "../player/pilot_files";
-import {
-    AMBIENT_GATE,
-    AMBIENT_ROLL_INTERVAL_FRAMES,
-    AmbientSeedResource,
-    ambientGovtEligible,
-    ambientShipCount,
-    MAX_AMBIENT_SHIPS,
-    playerPosition,
-    systemGovernmentId,
-    warpInAt,
-} from "./fleet_plugin";
+import { warpInAt } from "./fleet_plugin";
 import { makeDudeShip, setNoCollision } from "./dude";
 import { DamagedEvent, DeathEvent } from "./death_plugin";
-import { GameDataResource } from "./game_data_resource";
 import { ShieldComponent } from "./health_plugin";
 import { AIConfigComponent, AggroRangeSystem } from "./npc_ai_plugin";
 import { DeathAISystem } from "./npc_plugin";
@@ -60,7 +41,6 @@ import { OutfitsStateComponent } from "./outfit_plugin";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { ShipDataComponent } from "./ship_plugin";
 import { Stat } from "./stat";
-import { SystemIdResource } from "./system_id_resource";
 import { TargetComponent } from "./target_component";
 
 // Përs flag 0x0001: the përs holds a grudge — once the player damages it,
@@ -73,14 +53,7 @@ const GRUDGE_FLAG = 0x0001;
 // in iff its slot is eligible. The port's data layer does not expose engine
 // table slots, so the draw is composed as the same probability:
 // rand(1022) < eligibleCount, then a uniform pick among the eligible përs.
-const PERS_TABLE_ROLL = 0x3fe;
-
-// Frames until this system's next ambient slot pass. 0 rolls immediately,
-// so a freshly built system world still spawns on entry. The gate/interval/
-// seed model is FUN_0041af90's, shared with SpawnFleetsSystem (see
-// fleet_plugin).
-const PersRollResource =
-    new Resource<{ framesUntilRoll: number }>('PersRollResource');
+export const PERS_TABLE_ROLL = 0x3fe;
 
 export const PersComponent = new Component<{
     persId: string,
@@ -94,110 +67,9 @@ export const PersComponent = new Component<{
 // PlayerShipSelector".
 const PlayerQuery = new Query([UUID, PlayerShipSelector] as const);
 
-const SpawnPersSystem = new AsyncSystem({
-    name: 'SpawnPersSystem',
-    args: [GameDataResource, SystemIdResource, Entities, GetWorld,
-        PersRollResource, AmbientSeedResource, RunQuery,
-        SingletonComponent] as const,
-    exclusive: true,
-    async step(gameData, systemId, entities, world, roll, seeded, runQuery) {
-        // Cooldown (the resource's immer patches land on the next run, so
-        // the count is off by at most one frame).
-        if (roll.framesUntilRoll > 0) {
-            roll.framesUntilRoll--;
-            return;
-        }
-        roll.framesUntilRoll = AMBIENT_ROLL_INTERVAL_FRAMES - 1;
-
-        const state = world.resources.get(PlayerStateResource);
-        const env = world.resources.get(MissionEnvResource);
-        if (!state || !env) {
-            return;
-        }
-        // One seed per system entry; every later pass advances the same
-        // stream, so consecutive rolls differ (the engine's stream is
-        // global and continuous; see pilot_files).
-        if (!seeded.val) {
-            seedRng(state.rngSeed);
-            seeded.val = true;
-        }
-        const ids = await gameData.ids;
-        if (ids.Pers.length === 0) {
-            return;
-        }
-        const systemData = env.system(systemId);
-        if (!systemData) {
-            return;
-        }
-
-        // FUN_0041af90's ambient branch, përs slot: rand(7) == 0 takes the
-        // përs roll, any other draw defers to the flët/dude branches (owned
-        // by SpawnFleetsSystem; the dude branch is not ported).
-        if (randInt(AMBIENT_GATE) !== 0) {
-            return;
-        }
-        // 64-slot bound: with no free slot, the binary's spawn gives up.
-        if (ambientShipCount(entities) >= MAX_AMBIENT_SHIPS) {
-            return;
-        }
-
-        // FUN_004235c0: scan every përs for eligibility (alive, LinkSyst
-        // matches, ActiveOn passes), then draw ONE index with rand(1022)
-        // into the 1024-slot përs table; if the drawn slot is eligible,
-        // exactly that përs warps in — ONE spawn per pass, not one roll per
-        // përs. (The engine's other entry, the sÿst Peripherals pairs at
-        // rand(100) < percent, is sÿst data this port does not model.)
-        const matching: Array<{ pers: PersData; shipType: string }> = [];
-        for (const persId of ids.Pers) {
-            let pers: PersData;
-            try {
-                pers = await gameData.data.Pers.get(persId);
-            }
-            catch {
-                continue;
-            }
-            // Dead and deactivated përs never respawn.
-            if ((state.pers[persId]?.status ?? "alive") !== "alive") {
-                continue;
-            }
-            if (!persActive(pers, state, systemId, systemData, env)) {
-                continue;
-            }
-            if (!pers.shipType) {
-                continue;
-            }
-            matching.push({ pers, shipType: pers.shipType });
-        }
-
-        // One shared LCG stream, seeded once per system entry above; this
-        // pass's draws advance it (see pilot_files).
-        if (randInt(PERS_TABLE_ROLL) < matching.length) {
-            const { pers, shipType: shipTypeId } =
-                matching[randInt(matching.length)];
-            // The përs's ship is keyed by the përs id: while it is alive in
-            // the system, a re-draw of the same përs is a no-op (the engine
-            // keeps one slot per living ship).
-            if (!entities.has(`pers-ship ${pers.id}`)) {
-                let shipData: ShipData | null = null;
-                try {
-                    shipData = await gameData.data.Ship.get(shipTypeId);
-                }
-                catch {
-                    console.warn(`[pers] unknown shïp ${shipTypeId} (përs ${pers.id})`);
-                }
-                if (shipData) {
-                    spawnPers(entities, shipData, pers, state,
-                        await weaponOutfitMap(gameData),
-                        playerPosition(runQuery));
-                }
-            }
-        }
-    },
-});
-
 // LinkSyst -1 matches any system; otherwise it uses the mïsn system filter
 // codes (specific ids, the near bands and the govt relation bands).
-function persActive(pers: PersData, state: PlayerState, systemId: string,
+export function persActive(pers: PersData, state: PlayerState, systemId: string,
     systemData: SystemData, env: MissionEnv): boolean {
     if (pers.linkSyst !== -1) {
         const originSystemId = (state.lastStellar !== null
@@ -234,10 +106,7 @@ function persActive(pers: PersData, state: PlayerState, systemId: string,
             return false;
         }
     }
-    // The ambient-population govt gate (see ambientGovtEligible): the
-    // system's population is mostly its own government + civilians.
-    return ambientGovtEligible(pers.govt,
-        systemGovernmentId(systemData, env), env);
+    return true;
 }
 
 function spawnPers(entities: EntityMap, shipData: ShipData, pers: PersData,
@@ -313,10 +182,33 @@ function spawnPers(entities: EntityMap, shipData: ShipData, pers: PersData,
     entities.set(`pers-ship ${pers.id}`, ship);
 }
 
+// Fetches the përs's ship class and warps it in — the spawn tail of
+// FUN_004235c0, shared by ambient_plugin's peripheral loop and its global
+// përs roll. The ship is keyed by the përs id: while it is alive in the
+// system, a re-draw of the same përs is a no-op (the engine keeps one slot
+// per living ship). Returns whether a ship was spawned.
+export async function spawnPersShip(gameData: GameDataInterface,
+    entities: EntityMap, pers: PersData, state: PlayerState,
+    weaponOutfits: Map<string, string>, origin: Position): Promise<boolean> {
+    if (!pers.shipType || entities.has(`pers-ship ${pers.id}`)) {
+        return false;
+    }
+    let shipData: ShipData;
+    try {
+        shipData = await gameData.data.Ship.get(pers.shipType);
+    }
+    catch {
+        console.warn(`[pers] unknown shïp ${pers.shipType} (përs ${pers.id})`);
+        return false;
+    }
+    spawnPers(entities, shipData, pers, state, weaponOutfits, origin);
+    return true;
+}
+
 // Weapon -> granting-outfit map, derived by scanning the outfit table once
 // per world build (outfits are the only way to put a weapon on a ship in
 // this engine).
-async function weaponOutfitMap(gameData: GameDataInterface):
+export async function weaponOutfitMap(gameData: GameDataInterface):
     Promise<Map<string, string>> {
     const map = new Map<string, string>();
     const ids = await gameData.ids;
@@ -410,9 +302,6 @@ const PersGrudgeTargetSystem = new System({
 export const PersPlugin: Plugin = {
     name: 'PersPlugin',
     build(world) {
-        world.resources.set(PersRollResource, { framesUntilRoll: 0 });
-        world.resources.set(AmbientSeedResource, { val: false });
-        world.addSystem(SpawnPersSystem);
         world.addSystem(PersDeathSystem);
         world.addSystem(PersGrudgeSystem);
         world.addSystem(PersGrudgeTargetSystem);

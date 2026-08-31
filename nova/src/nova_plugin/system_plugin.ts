@@ -2,6 +2,7 @@ import { Plugin } from "nova_ecs/plugin";
 import { DeltaPlugin } from "nova_ecs/plugins/delta_plugin";
 import { MovementPlugin } from "nova_ecs/plugins/movement_plugin";
 import { TimePlugin } from "nova_ecs/plugins/time_plugin";
+import { AmbientPlugin } from "./ambient_plugin";
 import { AnimationPlugin } from "./animation_plugin";
 import { BayPlugin } from "./bay_plugin";
 import { BeamPlugin } from "./beam_plugin";
@@ -64,6 +65,9 @@ export const SystemPlugin: Plugin = {
         world.addPlugin(NpcPlugin);
         world.addPlugin(NpcAIPlugin);
         world.addPlugin(PersPlugin);
+        // The ambient population event (FUN_0041af90): jump-in burst,
+        // landing/liftoff/boarding repopulation, dûde branch, despawn.
+        world.addPlugin(AmbientPlugin);
         world.addPlugin(CombatRatingPlugin);
         world.addPlugin(MissionShipPlugin);
         world.addPlugin(EscortPlugin);

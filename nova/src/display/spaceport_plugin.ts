@@ -7,7 +7,7 @@ import { System } from 'nova_ecs/system';
 import { GameData } from '../client/gamedata/GameData';
 import { ControlsSubject } from '../nova_plugin/controls_plugin';
 import { GameDataResource } from '../nova_plugin/game_data_resource';
-import { LandEvent, PlanetComponent } from '../nova_plugin/planet_plugin';
+import { LandEvent, LiftoffEvent, PlanetComponent } from '../nova_plugin/planet_plugin';
 import { PlayerShipSelector } from '../nova_plugin/player_ship_plugin';
 import { snapshotPlayerShip } from '../nova_plugin/ship_snapshot';
 import { shipFreeCargoTons } from '../nova_plugin/ship_plugin';
@@ -106,6 +106,10 @@ const LandSystem = new System({
                     queuePlayerStateSave();
                 }
                 entities.set(shipUuid, newShip);
+                // The ship is back in the world: liftoff repopulates the
+                // system's ambient ships (FUN_00486ed0@004870b1), like the
+                // landing above.
+                world?.emit(LiftoffEvent, { id, uuid: shipUuid }, [newShip]);
             });
     }
 });
