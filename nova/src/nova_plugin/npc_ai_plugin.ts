@@ -5,16 +5,19 @@
 // acquire targets through a strength-scaled odds filter (no radius), an AI
 // ship retaliates against ANY different-government attacker subject to the
 // suppression cascade, and ships flee on low shields while their target
-// lives.
+// lives. FUN_00405590's pursuit memory (AI > 2) loiters where the target
+// was lost instead of dropping it, and FUN_00403de0's AI-4 comm-scan flies
+// idle interceptors at a random ship to hail (or wave through) the player.
 //
 // The combat building blocks stay in npc_plugin: these systems only set
 // TargetComponent and movement/weapon state, and run after FollowAI /
 // ShootAllWeaponsAI so they can override the generic chase-and-shoot AI
 // each step.
 
-import { Entities, GetWorld, UUID } from "nova_ecs/arg_types";
+import { Entities, Emit, GetWorld, UUID } from "nova_ecs/arg_types";
 import { Component } from "nova_ecs/component";
 import { EntityMap } from "nova_ecs/entity_map";
+import { EcsEvent } from "nova_ecs/events";
 import { Optional } from "nova_ecs/optional";
 import { Plugin } from "nova_ecs/plugin";
 import { MovementState, MovementStateComponent } from "nova_ecs/plugins/movement_plugin";
@@ -23,6 +26,7 @@ import { Query } from "nova_ecs/query";
 import { System } from "nova_ecs/system";
 import { World } from "nova_ecs/world";
 import { GovernmentData } from "novadatainterface/GovernmentData";
+import { PlanetData } from "novadatainterface/PlanetData";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import { govtsAreAllies, govtsAreEnemies } from "../player/legal_status";
 import { PlayerStateResource } from "../player/player_state_component";
@@ -54,14 +58,28 @@ export const AIConfigComponent = new Component<{
 // Per-ship AI state, mirroring the binary's ship-slot AI fields: anger
 // (+0x96, accumulated damage from the current target), the last attacker,
 // the flee latch (AI state 3), the trader's focus spöb (+0x92) and its
-// post-arrival wait (+0x4c).
+// post-arrival wait (+0x4c). The optional fields model the binary's
+// longer-lived AI states: the pursuit-memory loiter (the target reference
+// kept while it is invisible, with the +0xc90c attention window) and the
+// AI-4 comm-scan (state 7's scan target +0x70 and the last scan-mark
+// +0x90, which is never re-picked).
 export const AIStateComponent = new Component<{
     anger: number,
     attackedBy: string | null,
     fleeing: boolean,
     destination?: string,
     waitUntil?: number,
+    lostTarget?: string,
+    attentionUntil?: number,
+    scanTarget?: string,
+    lastScanMark?: string,
 }>('AIState');
+
+// FUN_00401800: an interceptor completing its comm-scan approach hails the
+// player (rand(100) ≤ 75) instead of dropping silently. The AI only fires
+// the event — the govt greeting text and the comm surface are the display
+// layer's business (the port does not yet parse the gövt greeting STR#).
+export const NpcHailEvent = new EcsEvent<{ from: string }>('NpcHailEvent');
 
 // AI types with the special-AI behavior set: 1 wimpy trader, 2 brave
 // trader, 3 warship, 4 interceptor (slot+0x88) and 6 mission special
@@ -153,8 +171,9 @@ const PlayerQuery = new Query([UUID, MovementStateComponent, PlayerShipSelector]
 
 function isArrived(movement: MovementState, planetUuid: string,
     entities: EntityMap): boolean {
-    // FUN_00462410: the spöb's radius is its sprite half-size (engine
-    // default 0x96 = 150); the arrival test is |dx|,|dy| ≤ radius/4.
+    // FUN_00462410: the spöb's radius is the FULL WIDTH of its sprite base
+    // frame (rlëD size[0]; engine default 0x96 = 150); the arrival test is
+    // |dx|,|dy| ≤ radius/4.
     const planet = entities.get(planetUuid);
     const planetMovement = planet?.components.get(MovementStateComponent);
     if (!planet || !planetMovement) {
@@ -167,38 +186,93 @@ function isArrived(movement: MovementState, planetUuid: string,
 }
 
 // FUN_0040c790: the trader destination pick — a rejection draw of
-// rand(16) over the current system's 16 spöb slots, retried until the
-// drawn spöb is a candidate. Candidates sit on the map (|x|,|y| < 1000,
-// the spöb table +4/+6 test) and are not hostile to my government. The
-// binary loops unbounded; the port bounds the draws (a null return sends
-// the trader to the FUN_00415b80 jump-out). The govt-flags2
-// (0x80/0x40/0x20) spöb-category preferences are omitted — PlanetData
-// carries no raw spöb flags2.
+// rand(16) over the current system's 16 spöb slots (the port's planet
+// entities), retried until the drawn slot satisfies the selected branch's
+// predicate. Slot validity is FUN_0046e3f0 plus the SIGNED x < 1000 and
+// y < 1000 test (runtime spöb +4/+6). Ordinary = UNINHABITED (raw flags
+// 0x20 set — the inhabitable bit is cleared) with no 0x3000 category
+// bits; the counters are taken over valid non-hostile slots. The govt's
+// flags2 (raw gövt +0x04 → runtime +0x22) selects the branch:
+//   0x80 force-picks a 0x2000-category spöb when one is reachable,
+//   0x40 force-picks a 0x1000-category spöb (0x80 wins),
+//   otherwise the general path draws an inhabited (non-ordinary) spöb,
+//   vetoing 0x2000 unless 0x80 is set and 0x1000 when 0x20 is set — and
+//   picks NOTHING (0xffff → the jump-out) when the vetoes cannot be met.
+// FUN_00403de0's interceptor call passes param_3 = 1: any non-category
+// non-hostile slot (uninhabited included), gated on at least one
+// inhabited non-category spöb. The binary's param_2 is 0 at every ported
+// call site, which pins the general path to branch 3. The binary loops
+// unbounded; the port bounds the draws (a null return sends the trader to
+// the FUN_00415b80 jump-out).
 const TRAVEL_DRAW = 16;
 const TRAVEL_DRAW_LIMIT = 1000;
 
-type PlanetEntry = readonly [string, MovementState, { id: string },
-    { govt: string | null } | undefined];
+// FUN_0040c790's param_2: no ported caller passes it set.
+const TRAVEL_PARAM_2 = false;
 
-function drawDestination(movement: MovementState,
-    govtId: string | null | undefined, world: World,
-    planets: Array<PlanetEntry>): string | null {
+type PlanetEntry = readonly [string, MovementState, { id: string },
+    PlanetData | undefined];
+
+function drawDestination(govtId: string | null | undefined, world: World,
+    planets: Array<PlanetEntry>, interceptorMode: boolean): string | null {
     const env = world.resources.get(MissionEnvResource);
     const mine = env?.government(govtId ?? null) ?? null;
-    const candidates = planets
-        .filter(([, planetMovement]) =>
-            Math.abs(planetMovement.position.x) < 1000
-            && Math.abs(planetMovement.position.y) < 1000)
-        .filter(([, , , planetData]) => {
-            const theirs = planetData
-                ? env?.government(planetData.govt) ?? null : null;
-            return !govtsHostile(mine, theirs, mine?.id, theirs?.id);
-        })
-        .map(([planetUuid]) => planetUuid);
+    const mineFlags2 = mine?.flags2 ?? 0;
+
+    const facts = planets.map(([, planetMovement, , data]) => {
+        const theirGovt = data ? env?.government(data.govt) ?? null : null;
+        const category = (data?.flags2 ?? 0) & 0x3000;
+        return {
+            valid: planetMovement.position.x < 1000
+                && planetMovement.position.y < 1000,
+            hostile: govtsHostile(mine, theirGovt, mine?.id, theirGovt?.id),
+            ordinary: data?.inhabited === false && category === 0,
+            cat1000: (category & 0x1000) !== 0,
+            cat2000: (category & 0x2000) !== 0,
+        };
+    });
+    const counted = facts.filter(fact => fact.valid && !fact.hostile);
+    const nA = counted.filter(fact => fact.cat2000).length;
+    const nB = counted.filter(fact => fact.cat1000).length;
+    const nSpecial = counted.filter(fact => !fact.ordinary).length;
+    const nPlain = counted.filter(fact => !fact.ordinary && !fact.cat1000
+        && !fact.cat2000).length;
+
+    let predicate: (fact: typeof facts[number]) => boolean;
+    if (interceptorMode) {
+        if (nPlain < 1) {
+            return null;
+        }
+        predicate = fact => fact.valid && !fact.hostile && !fact.cat2000
+            && !fact.cat1000;
+    }
+    else if ((mineFlags2 & 0x80) !== 0 && nA > 0) {
+        predicate = fact => fact.valid && !fact.hostile && fact.cat2000;
+    }
+    else if ((mineFlags2 & 0x40) !== 0 && nB > 0) {
+        predicate = fact => fact.valid && !fact.hostile && fact.cat1000;
+    }
+    else if (nSpecial < 1 || !TRAVEL_PARAM_2
+        || (mineFlags2 & 0x20) !== 0 || (nPlain < 1 && nB < 1)) {
+        // The general path draws only when its vetoes can be satisfied —
+        // otherwise the binary returns 0xffff without drawing.
+        if (!(nSpecial > 0 && (nPlain > 0
+            || (nB > 0 && (mineFlags2 & 0x20) === 0)))) {
+            return null;
+        }
+        predicate = fact => fact.valid && !fact.hostile && !fact.ordinary
+            && !(fact.cat2000 && (mineFlags2 & 0x80) === 0)
+            && !(fact.cat1000 && (mineFlags2 & 0x20) !== 0);
+    }
+    else {
+        predicate = fact => fact.valid && !fact.hostile && !fact.ordinary
+            && !fact.cat2000;
+    }
+
     for (let draw = 0; draw < TRAVEL_DRAW_LIMIT; draw++) {
         const idx = randInt(TRAVEL_DRAW);
-        if (idx < candidates.length) {
-            return candidates[idx];
+        if (idx < facts.length && predicate(facts[idx])) {
+            return planets[idx][0];
         }
     }
     return null;
@@ -219,10 +293,15 @@ export const AggroRangeSystem = new System({
     name: 'AggroRange',
     args: [AIConfigComponent, TargetComponent, MovementStateComponent, UUID,
         Optional(GovernmentComponent), Entities, GetWorld,
-        PlayerQuery] as const,
+        PlayerQuery, Optional(AIStateComponent)] as const,
     step(config, target, movement, uuid, govt, entities, world: World,
-        players) {
+        players, state) {
         if (!hasAI(config)) {
+            return;
+        }
+        if (state?.lostTarget !== undefined) {
+            // Pursuit memory (FUN_00405590): the binary still holds +0x70
+            // while the attention window runs, so acquisition is skipped.
             return;
         }
         if (target.target !== undefined && entities.has(target.target)) {
@@ -379,20 +458,175 @@ function isMyEscort(targetUuid: string | undefined, myUuid: string,
         === myUuid;
 }
 
+const ScanCandidatesQuery = new Query([UUID, ShipComponent,
+    Optional(AIConfigComponent), Optional(ArmorComponent),
+    Optional(ShieldComponent)] as const);
+
+// FUN_00403de0's voluntary comm-scan (AI state 7), run after AggroRange:
+// an idle AI-4 interceptor that acquired nothing picks a random visible
+// alive same-system ship that is NOT another interceptor (rejection
+// rand(0x40), never the last scan-mark +0x90) and flies straight at it
+// (substate 9) to within a 100px square (DAT_0057501c). At the square the
+// FUN_00401800 hail gate applies: the player (and only the player) is
+// hailed on rand(100) ≤ 75 — the port emits NpcHailEvent for the display
+// layer; the govt-greeting text, the mïsn-hostility hail variant and the
+// player-side anti-refire timer have no port model yet — and everything
+// else (NPC targets, failed rolls) drops silently to state 0. Scan
+// targets get NO pursuit memory: a gone target just drops. FUN_0040e020
+// keeps running every tick during state 7, so a fresh acquisition
+// (AggroRange setting a target) cancels the scan — attack wins. The rare
+// scan-duty mode (+0xc8d0 = 0x3ff, spawner FUN_0046ac50) is unported.
+const SCAN_REACH = 100;         // DAT_0057501c
+const SCAN_DRAW = 0x40;         // FUN_004683b0(0x40) rejection draw
+const SCAN_DRAW_LIMIT = 1000;   // the binary loops unbounded
+
+const InterceptorScanSystem = new System({
+    name: 'InterceptorScan',
+    args: [AIConfigComponent, AIStateComponent, TargetComponent,
+        MovementStateComponent, TimeResource, UUID, Entities, GetWorld,
+        Emit, ScanCandidatesQuery, PlayerQuery] as const,
+    after: [AggroRangeSystem],
+    step(config, state, target, movement, _time, uuid, entities,
+        _world: World, emit, candidates, players) {
+        if (config.aiType !== 4) {
+            // FUN_00403de0 is the AI-4 brain exclusively.
+            return;
+        }
+        if (target.target !== undefined) {
+            // Attack wins over the scan (state 7's per-tick acquisition).
+            state.scanTarget = undefined;
+            return;
+        }
+        if (state.scanTarget !== undefined) {
+            const scanUuid = state.scanTarget;
+            if (!entities.has(scanUuid)) {
+                state.scanTarget = undefined;
+                return;
+            }
+            const scanMovement = entities.get(scanUuid)!.components
+                .get(MovementStateComponent)!;
+            const dx = Math.abs(scanMovement.position.x
+                - movement.position.x);
+            const dy = Math.abs(scanMovement.position.y
+                - movement.position.y);
+            if (dx <= SCAN_REACH && dy <= SCAN_REACH) {
+                if (players.some(([playerUuid]) => playerUuid === scanUuid)
+                    && randInt(100) <= 75) {
+                    emit(NpcHailEvent, { from: uuid });
+                }
+                state.lastScanMark = scanUuid;
+                state.scanTarget = undefined;
+                return;
+            }
+            // Substate 9: straight fly-at — turn and full thrust.
+            movement.turnTo = scanUuid;
+            movement.accelerating = 1;
+            return;
+        }
+
+        // Scan initiation: idle states 0/1/0x14 with the wait expired —
+        // no target, no destination, no wait, not fleeing or loitering.
+        if (state.destination !== undefined
+            || state.waitUntil !== undefined || state.fleeing
+            || state.lostTarget !== undefined) {
+            return;
+        }
+        const eligible = candidates.filter(([candidateUuid, , aiConfig,
+            armor, shield]) =>
+            candidateUuid !== uuid
+            && aiConfig?.aiType !== 4
+            && !isDeadInSpace(armor, shield)
+            && candidateUuid !== state.lastScanMark);
+        if (eligible.length === 0) {
+            return;
+        }
+        for (let draw = 0; draw < SCAN_DRAW_LIMIT; draw++) {
+            const idx = randInt(SCAN_DRAW);
+            if (idx < eligible.length) {
+                state.scanTarget = eligible[idx][0];
+                state.lastScanMark = state.scanTarget;
+                return;
+            }
+        }
+    },
+});
+
+// The pursuit-memory tick (FUN_00405590 @0x4057f0: attack states 4/0xd
+// with an AI type > 2, target alive but invisible). The port's only
+// invisibility is the removed target entity, so TargetLostSystem stashes
+// the reference here; the ship brakes to a full stop (substate 1: retro
+// burn above the 0.35 px/frame threshold — DAT_00575080, ×30 for the
+// port's px/s velocities — then sits) and loiters for the attention
+// window (rand(100)+100 frames). The target becoming visible again (an
+// entity back under the kept uuid) resumes the attack and re-arms the
+// sentinel; expiry drops it (state 0) and AggroRange re-acquires next
+// tick. AI ≤ 2 has no memory (TargetLostSystem keeps its jump-out).
+const BRAKE_SPEED = 0.35 * 30;
+
+const PursuitMemorySystem = new System({
+    name: 'PursuitMemory',
+    args: [AIStateComponent, TargetComponent, MovementStateComponent,
+        TimeResource, Entities] as const,
+    after: [AggroRangeSystem],
+    step(state, target, movement, time, entities) {
+        if (state.lostTarget === undefined) {
+            return;
+        }
+        if (target.target !== undefined && entities.has(target.target)) {
+            // A live target appeared outside the memory (e.g. retaliation
+            // picked a new shooter): the stale reference is dropped.
+            state.lostTarget = undefined;
+            state.attentionUntil = undefined;
+            return;
+        }
+        if (entities.has(state.lostTarget)) {
+            // Visible again: back to the attack (state 4), window re-armed.
+            target.target = state.lostTarget;
+            state.lostTarget = undefined;
+            state.attentionUntil = undefined;
+            return;
+        }
+        if (time.time >= state.attentionUntil!) {
+            // Expired: drop (target -1, state 0) and re-acquire.
+            state.lostTarget = undefined;
+            state.attentionUntil = undefined;
+            state.anger = 0;
+            state.attackedBy = null;
+            state.fleeing = false;
+            state.destination = undefined;
+            state.waitUntil = undefined;
+            target.target = undefined;
+            return;
+        }
+        if (Math.abs(movement.velocity.x) >= BRAKE_SPEED
+            || Math.abs(movement.velocity.y) >= BRAKE_SPEED) {
+            movement.turnTo = null;
+            movement.turnBack = true;
+            movement.accelerating = 1;
+        }
+        else {
+            movement.turnBack = false;
+            movement.accelerating = 0;
+        }
+    },
+});
+
 // Idle AI ships cruise between the system's planets (FUN_00405590 state 1):
-// a rejection-drawn destination, a square radius/4 arrival test, a
-// rand(200)+300-frame wait on arrival, and a re-decide that LANDS
+// a rejection-drawn destination, a square radius/4 arrival test, the
+// ship-type flags3 park wait on arrival, and a re-decide that LANDS
 // (despawns) the trader when the drawn destination is the spöb it is
-// parked at (binary state 0x14).
+// parked at (binary state 0x14). A 0x3000-category destination also lands
+// on arrival: state 1 hands a category focus straight to state 0x14.
 const TraderTravelSystem = new System({
     name: 'TraderTravel',
     args: [AIConfigComponent, AIStateComponent, TargetComponent,
         MovementStateComponent, TimeResource, UUID, Entities,
         Optional(ArmorComponent), Optional(ShieldComponent),
-        Optional(GovernmentComponent), GetWorld, PlanetsQuery] as const,
-    after: [AggroRangeSystem, FollowAI],
+        Optional(GovernmentComponent), Optional(ShipDataComponent),
+        GetWorld, PlanetsQuery] as const,
+    after: [AggroRangeSystem, InterceptorScanSystem, FollowAI],
     step(config, state, target, movement, time, uuid, entities, armor,
-        shield, govt, world: World, planets) {
+        shield, govt, shipData, world: World, planets) {
         if (!hasAI(config) || state.fleeing || isDeadInSpace(armor, shield)) {
             return;
         }
@@ -403,8 +637,17 @@ const TraderTravelSystem = new System({
         }
         target.target = undefined;
 
-        // Parked at a spöb, waiting out the arrival wait (+0x4c =
-        // rand(200)+300 frames) before the next decision.
+        // The comm-scan (state 7) and the pursuit-memory loiter are not
+        // travel states — InterceptorScanSystem / PursuitMemorySystem own
+        // the ship until they end.
+        if (state.scanTarget !== undefined
+            || state.lostTarget !== undefined) {
+            return;
+        }
+
+        // Parked at a spöb, waiting out the arrival wait (+0x4c, the
+        // flags3-gated rand(75)+100 / rand(200)+300) before the next
+        // decision.
         if (state.waitUntil !== undefined && state.waitUntil > time.time) {
             movement.accelerating = 0;
             return;
@@ -420,18 +663,32 @@ const TraderTravelSystem = new System({
                 movement.accelerating = 1;
                 return;
             }
-            // Arrived: park and wait, then re-decide (state 0).
+            // Arrived: a 0x2000/0x1000-category destination goes to state
+            // 0x14 — the ship lands (despawns into the spöb) instead of
+            // parking.
+            if (((entities.get(state.destination)?.components
+                .get(PlanetDataComponent)?.flags2 ?? 0) & 0x3000) !== 0) {
+                entities.delete(uuid);
+                return;
+            }
+            // Arrived: park and wait, then re-decide (state 0). The wait
+            // is the ship-type flags3 (+0x9ec) bit 0x2 variant:
+            // rand(75)+100 instead of rand(200)+300 (FUN_00405590
+            // @0x405c35).
             movement.accelerating = 0;
             state.destination = undefined;
-            state.waitUntil = time.time + (randInt(200) + 300) * 1000 / 30;
+            const shortWait = ((shipData?.flags3 ?? 0) & 0x2) !== 0;
+            state.waitUntil = time.time + (shortWait
+                ? randInt(75) + 100 : randInt(200) + 300) * 1000 / 30;
             return;
         }
 
         // Re-decide (FUN_0040c790 + FUN_00402e50 state 0): draw a
         // destination; drawing the spöb we are parked at means LAND
-        // (state 0x14 — the trader despawns into the planet).
-        const destination = drawDestination(movement, govt?.id, world,
-            planets);
+        // (state 0x14 — the trader despawns into the planet). AI 4 calls
+        // the picker with param_3 = 1 (FUN_00403de0).
+        const destination = drawDestination(govt?.id, world, planets,
+            config.aiType === 4);
         if (destination === null) {
             // FUN_0040c790's 0xffff → FUN_00415b80 jump out
             // (FUN_00410670): the port models that as the silent despawn
@@ -610,15 +867,23 @@ const RetaliateSystem = new System({
 // Target loss (TargetRemovedSystem fires when the target entity is
 // deleted): the anger and the flee latch end with the target, and AI types
 // 1-2 jump out instead of pursuing (FUN_00415b80/FUN_00410670, ported as a
-// silent despawn — no NPC jump animation in this engine). Types 3-4 just
-// re-decide through AggroRange.
+// silent despawn — no NPC jump animation in this engine). Attack-state AI
+// > 2 enters the pursuit-memory loiter instead (FUN_00405590 @0x4057f0:
+// keep +0x70 for the rand(100)+100-frame attention window, PursuitMemory
+// owns the rest) — fleeing ships (state 3) end with the target as before.
 const TargetLostSystem = new System({
     name: 'TargetLost',
     events: [TargetRemovedEvent],
     args: [TargetRemovedEvent, AIConfigComponent, AIStateComponent,
-        TargetComponent, UUID, Entities] as const,
-    step(_removed, config, state, target, uuid, entities) {
+        TargetComponent, TimeResource, UUID, Entities] as const,
+    step(removed, config, state, target, time, uuid, entities) {
         if (!hasAI(config)) {
+            return;
+        }
+        if (config.aiType > 2 && !state.fleeing) {
+            state.lostTarget = removed;
+            state.attentionUntil = time.time
+                + (randInt(100) + 100) * 1000 / 30;
             return;
         }
         state.anger = 0;
@@ -637,14 +902,18 @@ export const NpcAIPlugin: Plugin = {
     name: 'NpcAIPlugin',
     build(world) {
         world.addSystem(AggroRangeSystem);
+        world.addSystem(InterceptorScanSystem);
         world.addSystem(TraderTravelSystem);
+        world.addSystem(PursuitMemorySystem);
         world.addSystem(FleeSystem);
         world.addSystem(RetaliateSystem);
         world.addSystem(TargetLostSystem);
     },
     remove(world) {
         world.removeSystem(AggroRangeSystem);
+        world.removeSystem(InterceptorScanSystem);
         world.removeSystem(TraderTravelSystem);
+        world.removeSystem(PursuitMemorySystem);
         world.removeSystem(FleeSystem);
         world.removeSystem(RetaliateSystem);
         world.removeSystem(TargetLostSystem);

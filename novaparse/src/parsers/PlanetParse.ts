@@ -72,12 +72,13 @@ export async function PlanetParse(spob: SpobResource, notFoundFunction: (m: stri
         rledID = defaultAnimationImage.id;
     }
 
-    // FUN_00462410: the spöb's radius is its sprite half-size (the trader
-    // travel arrival test is radius/4); engine default 0x96 = 150 when the
-    // sprite is missing.
+    // FUN_00462410: the spöb radius is the FULL WIDTH of the sprite base
+    // frame (FUN_00462390 returns the frame-rect right−left = rlëD size[0]),
+    // not a half-size; the trader travel arrival test is radius/4. Engine
+    // default 0x96 = 150 when the sprite is missing.
     var radius = 150;
     if (rledResource) {
-        radius = rledResource.size[0] / 2;
+        radius = rledResource.size[0];
     }
 
     const animation: Animation = {
@@ -134,6 +135,7 @@ export async function PlanetParse(spob: SpobResource, notFoundFunction: (m: stri
         govt,
         radius,
         inhabited: (spob.flags & 0x20) === 0,
+        flags2: spob.flags2,
         hasBar: (spob.flags & 0x40) !== 0,
         tech: spob.techLevel,
         hasTradeCenter: (spob.flags & 0x00000002) !== 0,

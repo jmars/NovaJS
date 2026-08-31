@@ -12,11 +12,13 @@
 import "jasmine";
 import { MockGameData } from "novadatainterface/MockGameData";
 import { DudeData, getDefaultDudeData } from "novadatainterface/DudeData";
+import { getDefaultPlanetData, PlanetData } from "novadatainterface/PlanetData";
 import { getDefaultShipData, ShipData } from "novadatainterface/ShipData";
 import { Angle } from "nova_ecs/datatypes/angle";
 import { Position } from "nova_ecs/datatypes/position";
 import { Vector } from "nova_ecs/datatypes/vector";
 import { Entity } from "nova_ecs/entity";
+import { EcsEvent } from "nova_ecs/events";
 import { MovementStateComponent } from "nova_ecs/plugins/movement_plugin";
 import { TimeResource } from "nova_ecs/plugins/time_plugin";
 import { World } from "nova_ecs/world";
@@ -27,12 +29,13 @@ import { randInt, seedRng } from "../player/pilot_files";
 import { BoardingProfileComponent, makeDudeShip } from "./dude";
 import { DamagedEvent } from "./death_plugin";
 import { OwnerComponent } from "./fire_weapon_plugin";
-import { AIConfigComponent, AIStateComponent, NpcAIPlugin } from "./npc_ai_plugin";
+import { AIConfigComponent, AIStateComponent, NpcAIPlugin,
+    NpcHailEvent } from "./npc_ai_plugin";
 import { ChooseRandomTargetComponent, GovernmentComponent, NpcPlugin,
     playerIsHostile, ShootAllWeaponsComponent } from "./npc_plugin";
 import { PlayerStateResource } from "../player/player_state_component";
 import { PlayerShipSelector } from "./player_ship_plugin";
-import { PlanetComponent } from "./planet_plugin";
+import { PlanetComponent, PlanetDataComponent } from "./planet_plugin";
 import { makeShip } from "./make_ship";
 import { ArmorComponent, ShieldComponent } from "./health_plugin";
 import { ShipComponent, ShipDataComponent } from "./ship_plugin";
@@ -99,9 +102,14 @@ function addEntity(world: World, key: string, entity: Entity): Entity {
     return entity;
 }
 
-function makePlanetEntity(id: string, x: number, y: number): Entity {
+function makePlanetEntity(id: string, x: number, y: number,
+    data?: Partial<PlanetData>): Entity {
     const planet = new Entity(id);
     planet.components.set(PlanetComponent, { id });
+    if (data) {
+        planet.components.set(PlanetDataComponent,
+            { ...getDefaultPlanetData(), ...data });
+    }
     planet.components.set(MovementStateComponent, {
         accelerating: 0,
         position: new Position(x, y),
@@ -114,12 +122,12 @@ function makePlanetEntity(id: string, x: number, y: number): Entity {
 }
 
 function makeAiShip(dude: DudeData, position: [number, number],
-    govtId: string | null = dude.govt): Entity {
-    const ship = makeDudeShip(dude, SHIP, govtId);
+    govtId: string | null = dude.govt, shipData: ShipData = SHIP): Entity {
+    const ship = makeDudeShip(dude, shipData, govtId);
     ship.components.set(TargetComponent, { target: undefined });
     // The ShipDataProvider resolves ShipDataComponent for every ship in a
     // full world; set it here so strengthOf reads it deterministically.
-    ship.components.set(ShipDataComponent, SHIP);
+    ship.components.set(ShipDataComponent, shipData);
     ship.components.get(MovementStateComponent)!.position =
         new Position(position[0], position[1]);
     return ship;
@@ -869,6 +877,393 @@ describe("düde AIType behaviors", () => {
             state.legalRecord["nova:130"] = -1; // Polaris, crimeTol 0
             expect(playerIsHostile("nova:130", world)).toBeTrue();
         });
+});
+
+// Items resolved in the FUN_00405590 / FUN_0040c790 / FUN_00403de0 pass:
+// pursuit memory, the AI-4 comm-scan, the spöb-category destination
+// picker, the full-width-radius arrival and the flags3 park wait.
+describe("AI pursuit memory, comm-scan and travel fidelity", () => {
+    function capture<T>(world: World, event: EcsEvent<T>): { events: T[] } {
+        const events: T[] = [];
+        world.events.get(event).subscribe(data => events.push(data));
+        return { events };
+    }
+
+    // First seed whose rand(100) lands ≤ 75 (the hail roll) / > 75.
+    function hailSeeds(): [number, number] {
+        let hail = 0;
+        let wave = 0;
+        for (let seed = 1; hail === 0 || wave === 0; seed++) {
+            seedRng(seed);
+            const roll = randInt(100);
+            if (roll <= 75 && hail === 0) {
+                hail = seed;
+            }
+            if (roll > 75 && wave === 0) {
+                wave = seed;
+            }
+        }
+        return [hail, wave];
+    }
+
+    it("AI 3 keeps a lost target and brakes while the attention window runs",
+        () => {
+            const world = makeWorld();
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            npc.components.set(AIStateComponent,
+                { anger: 5, attackedBy: "enemy", fleeing: false });
+            const movement = npc.components.get(MovementStateComponent)!;
+            movement.velocity = new Vector(300, 0);
+            npc.components.set(TargetComponent, { target: "enemy" });
+
+            // TargetRemovedEvent fires when the target is removed (the
+            // TargetRemovedSystem translates a DeleteEvent into it).
+            world.emit(TargetRemovedEvent, "enemy", [npc.uuid]);
+            world.step();
+
+            const state = npc.components.get(AIStateComponent)!;
+            expect(state.lostTarget).toEqual("enemy");
+            // The grudge survives the loss until the window expires.
+            expect(state.anger).toEqual(5);
+            expect(state.attackedBy).toEqual("enemy");
+            expect(state.attentionUntil!).toBeGreaterThan(TIME.time);
+            expect(npc.components.get(TargetComponent)!.target)
+                .toBeUndefined();
+            // Substate 1: brake to a full stop.
+            expect(movement.turnBack).toBeTrue();
+            expect(movement.accelerating).toEqual(1);
+            expect(movement.turnTo).toBeNull();
+
+            // A target back under the kept uuid resumes the attack.
+            world.entities.set("enemy", makeShip(SHIP));
+            world.step();
+            expect(npc.components.get(TargetComponent)!.target)
+                .toEqual("enemy");
+            expect(npc.components.get(AIStateComponent)!.lostTarget)
+                .toBeUndefined();
+        });
+
+    it("the pursuit-memory window expiry drops the target and re-acquires",
+        () => {
+            const world = makeWorld();
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            npc.components.set(AIStateComponent,
+                { anger: 5, attackedBy: "enemy", fleeing: false });
+            npc.components.set(TargetComponent, { target: "enemy" });
+            world.emit(TargetRemovedEvent, "enemy", [npc.uuid]);
+            world.step();
+            const until = npc.components.get(AIStateComponent)!
+                .attentionUntil!;
+
+            // A new enemy appears while the window runs; the loiter holds.
+            const other = addGovtShip(world, "other", "nova:128",
+                [-500, 0]);
+            world.resources.get(TimeResource)!.time = until - 1;
+            world.step();
+            expect(npc.components.get(TargetComponent)!.target)
+                .toBeUndefined();
+
+            world.resources.get(TimeResource)!.time = until + 1;
+            world.step();
+            const state = npc.components.get(AIStateComponent)!;
+            expect(state.lostTarget).toBeUndefined();
+            expect(state.anger).toEqual(0);
+            expect(state.attackedBy).toBeNull();
+            // State 0: AggroRange re-acquires on the next tick.
+            world.step();
+            expect(npc.components.get(TargetComponent)!.target)
+                .toEqual(other.uuid);
+        });
+
+    it("AI 1-2 and fleeing ships still end with the target (no memory)", () => {
+        // Fleeing is binary state 3, not the attack states 4/0xd.
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        npc.components.set(AIStateComponent,
+            { anger: 5, attackedBy: "someone", fleeing: true });
+        world.emit(TargetRemovedEvent, "gone-target", [npc.uuid]);
+        world.step();
+        expect(npc.components.get(AIStateComponent)!.lostTarget)
+            .toBeUndefined();
+        expect(npc.components.get(AIStateComponent)!.anger).toEqual(0);
+    });
+
+    it("an idle interceptor scans a nearby ship and flies at it", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+        const neutral = addGovtShip(world, "neutral", "nova:141", [400, 0]);
+        world.step();
+
+        const state = npc.components.get(AIStateComponent)!;
+        expect(state.scanTarget).toEqual(neutral.uuid);
+        expect(state.lastScanMark).toEqual(neutral.uuid);
+        // Substate 9: straight fly-at (asserted on the second tick).
+        world.step();
+        const movement = npc.components.get(MovementStateComponent)!;
+        expect(movement.turnTo).toEqual(neutral.uuid);
+        expect(movement.accelerating).toEqual(1);
+    });
+
+    it("a completed NPC scan drops silently", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+        const neutral = addGovtShip(world, "neutral", "nova:141", [400, 0]);
+        const hails = capture(world, NpcHailEvent);
+        world.step();
+        expect(npc.components.get(AIStateComponent)!.scanTarget)
+            .toEqual(neutral.uuid);
+
+        // Inside the 100px square the scan resolves on the next step.
+        npc.components.get(MovementStateComponent)!.position =
+            new Position(400, 0);
+        world.step();
+        const state = npc.components.get(AIStateComponent)!;
+        expect(state.scanTarget).toBeUndefined();
+        expect(state.lastScanMark).toEqual(neutral.uuid);
+        expect(hails.events).toEqual([]);
+        // No pursuit memory for scan targets.
+        expect(state.lostTarget).toBeUndefined();
+    });
+
+    it("a completed player scan hails on the 76% roll", () => {
+        const [hailSeed, waveSeed] = hailSeeds();
+        for (const [seed, expectHail] of [[hailSeed, true],
+            [waveSeed, false]] as const) {
+            const world = makeWorld();
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+            const player = addEntity(world, "player",
+                makePlayerShip([80, 0]));
+            npc.components.set(AIStateComponent,
+                { anger: 0, attackedBy: null, fleeing: false,
+                    scanTarget: player.uuid, lastScanMark: player.uuid });
+            const hails = capture(world, NpcHailEvent);
+            // The hail roll is the step's first draw.
+            seedRng(seed);
+            world.step();
+
+            const state = npc.components.get(AIStateComponent)!;
+            expect(state.scanTarget).toBeUndefined();
+            expect(hails.events).toEqual(expectHail
+                ? [{ from: npc.uuid }] : []);
+        }
+    });
+
+    it("a gone scan target just drops (no pursuit memory)", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+        addGovtShip(world, "neutral", "nova:141", [400, 0]);
+        world.step();
+        expect(npc.components.get(AIStateComponent)!.scanTarget)
+            .toBeDefined();
+
+        world.entities.delete("neutral");
+        world.step();
+        const state = npc.components.get(AIStateComponent)!;
+        expect(state.scanTarget).toBeUndefined();
+        expect(state.lostTarget).toBeUndefined();
+    });
+
+    it("warships never run the comm-scan", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        addGovtShip(world, "neutral", "nova:141", [400, 0]);
+        world.step();
+        expect(npc.components.get(AIStateComponent)!.scanTarget)
+            .toBeUndefined();
+    });
+
+    it("govt flags2 0x80 forces 0x2000-category destinations", () => {
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags2: 0x80 }
+                : base.env.government(id),
+        });
+        const normal = makePlanetEntity("nova:150", 900, 0);
+        const category = makePlanetEntity("nova:151", -900, 0,
+            { flags2: 0x2000 });
+        addEntity(world, "normal", normal);
+        addEntity(world, "category", category);
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+
+        expect(npc.components.get(MovementStateComponent)!.turnTo)
+            .toEqual(category.uuid);
+    });
+
+    it("0x80 wins over 0x40 when both category pools exist", () => {
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags2: 0xc0 }
+                : base.env.government(id),
+        });
+        const cat1000 = makePlanetEntity("nova:150", 900, 0,
+            { flags2: 0x1000 });
+        const cat2000 = makePlanetEntity("nova:151", -900, 0,
+            { flags2: 0x2000 });
+        addEntity(world, "cat1000", cat1000);
+        addEntity(world, "cat2000", cat2000);
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+
+        expect(npc.components.get(MovementStateComponent)!.turnTo)
+            .toEqual(cat2000.uuid);
+    });
+
+    it("govt flags2 0x40 alone picks 0x1000-category destinations", () => {
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags2: 0x40 }
+                : base.env.government(id),
+        });
+        const normal = makePlanetEntity("nova:150", 900, 0);
+        const category = makePlanetEntity("nova:151", -900, 0,
+            { flags2: 0x1000 });
+        addEntity(world, "normal", normal);
+        addEntity(world, "category", category);
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+
+        expect(npc.components.get(MovementStateComponent)!.turnTo)
+            .toEqual(category.uuid);
+    });
+
+    it("flags2 0x20 vetoes 0x1000 in the general path (0xffff → jump out)",
+        () => {
+            const base = makeTestEnv();
+            const world = makeWorld({
+                government: id => id === "nova:130"
+                    ? { ...base.env.government("nova:130")!, flags2: 0x20 }
+                    : base.env.government(id),
+            });
+            addEntity(world, "category", makePlanetEntity("nova:150", 900, 0,
+                { flags2: 0x1000 }));
+            const npc = addEntity(world, "npc",
+                makeAiShip(TRADER_DUDE, [0, 0]));
+            world.step();
+
+            // No drawable destination: the trader jumps out (despawns).
+            expect(world.entities.get("npc")).toBeUndefined();
+        });
+
+    it("the general path picks inhabited spöbs over uninhabited ones", () => {
+        const world = makeWorld();
+        const uninhabited = makePlanetEntity("nova:150", 900, 0,
+            { inhabited: false });
+        const inhabited = makePlanetEntity("nova:151", -900, 0);
+        addEntity(world, "uninhabited", uninhabited);
+        addEntity(world, "inhabited", inhabited);
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+
+        expect(npc.components.get(MovementStateComponent)!.turnTo)
+            .toEqual(inhabited.uuid);
+    });
+
+    it("west-of-origin spöbs are drawable (signed x < 1000)", () => {
+        const world = makeWorld();
+        const west = addEntity(world, "west",
+            makePlanetEntity("nova:150", -2000, 0));
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+
+        expect(npc.components.get(MovementStateComponent)!.turnTo)
+            .toEqual(west.uuid);
+    });
+
+    it("a 0x3000-category destination lands the trader on arrival", () => {
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags2: 0x80 }
+                : base.env.government(id),
+        });
+        addEntity(world, "category", makePlanetEntity("nova:150", 900, 0,
+            { flags2: 0x2000 }));
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+        expect(npc.components.get(AIStateComponent)!.destination)
+            .toEqual("category");
+
+        // Arrived: land (despawn) instead of parking.
+        npc.components.get(MovementStateComponent)!.position =
+            new Position(890, 0);
+        world.step();
+        expect(world.entities.get("npc")).toBeUndefined();
+    });
+
+    it("AI 4 draws any non-category spöb, uninhabited included", () => {
+        const world = makeWorld();
+        const category = makePlanetEntity("nova:150", 900, 0,
+            { flags2: 0x2000 });
+        const open = makePlanetEntity("nova:151", -900, 0);
+        const uninhabited = makePlanetEntity("nova:152", 0, 500,
+            { inhabited: false });
+        addEntity(world, "category", category);
+        addEntity(world, "open", open);
+        addEntity(world, "uninhabited", uninhabited);
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+        world.step();
+
+        // The gate needs an inhabited non-category spöb (nova:151); the
+        // draw may land on it or the uninhabited nova:152 — never the
+        // category nova:150.
+        const destination = npc.components.get(AIStateComponent)!.destination;
+        expect(destination === "open" || destination === "uninhabited")
+            .toBeTrue();
+    });
+
+    it("flags3 bit 0x2 shortens the arrival park wait", () => {
+        const shortWaitShip: ShipData = { ...SHIP, flags3: 0x2 };
+        const arrive = (shipData: ShipData): number => {
+            const world = makeWorld();
+            addEntity(world, "planet", makePlanetEntity("nova:150", 900, 0));
+            const npc = addEntity(world, "npc",
+                makeAiShip(TRADER_DUDE, [0, 0], TRADER_DUDE.govt, shipData));
+            world.step();
+            npc.components.get(MovementStateComponent)!.position =
+                new Position(890, 0);
+            world.step();
+            const wait = npc.components.get(AIStateComponent)!.waitUntil;
+            expect(wait).toBeDefined();
+            return wait! - TIME.time;
+        };
+
+        // rand(75)+100 frames vs rand(200)+300 — the bands do not overlap.
+        const shortFrames = arrive(shortWaitShip) * 30 / 1000;
+        expect(shortFrames).toBeGreaterThanOrEqual(100);
+        expect(shortFrames).toBeLessThan(200);
+        const longFrames = arrive(SHIP) * 30 / 1000;
+        expect(longFrames).toBeGreaterThanOrEqual(300);
+    });
+
+    it("arrival reach is radius/4 of the FULL sprite width", () => {
+        const world = makeWorld();
+        // radius 400 → reach 100: |dx| = 90 arrives (the old half-radius
+        // model would give reach 50 and keep traveling).
+        addEntity(world, "planet", makePlanetEntity("nova:150", 900, 0,
+            { radius: 400 }));
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+        npc.components.get(MovementStateComponent)!.position =
+            new Position(810, 0);
+        world.step();
+
+        const state = npc.components.get(AIStateComponent)!;
+        expect(state.destination).toBeUndefined();
+        expect(state.waitUntil).toBeGreaterThan(TIME.time);
+    });
 });
 
 // The generic NpcPlugin random-target AI (ChooseRandomTarget) is the

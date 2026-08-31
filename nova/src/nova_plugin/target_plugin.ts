@@ -1,4 +1,4 @@
-import { Emit, UUID } from "nova_ecs/arg_types";
+import { Emit, RunQuery, UUID } from "nova_ecs/arg_types";
 import { Component } from "nova_ecs/component";
 import { DeleteEvent, EcsEvent } from "nova_ecs/events";
 import { Optional } from "nova_ecs/optional";
@@ -90,20 +90,30 @@ const ChooseTargetSystem = new System({
     }
 });
 
+// The targeters holding a reference to a deleted entity. A plain query arg
+// on a DeleteEvent system is scoped to the deleted entities, so the system
+// runs this through RunQuery to see every live targeter.
+const TargetedQuery = new Query([TargetComponent, UUID] as const);
+
 export const TargetRemovedEvent = new EcsEvent<string>('TargetRemovedEvent');
 const TargetRemovedSystem = new System({
     name: 'TargetRemovedSystem',
     events: [DeleteEvent],
-    args: [UUID, new Query([TargetComponent, UUID] as const), Emit] as const,
-    step(uuid, withTarget, emit) {
-        const targetRemoved: string[] = [];
-        for (const [target, targeterUuid] of withTarget) {
-            if (target.target === uuid) {
-                target.target = undefined;
-                targetRemoved.push(targeterUuid);
+    args: [UUID, RunQuery, Emit] as const,
+    step(uuid, runQuery, emit) {
+        // The DeleteEvent data is a Set of [uuid, entity] entries (one per
+        // Map.delete) despite the declared string type.
+        const deleted = uuid as unknown as Iterable<[string, unknown]>;
+        for (const [removedUuid] of deleted) {
+            const targetRemoved: string[] = [];
+            for (const [target, targeterUuid] of runQuery(TargetedQuery)) {
+                if (target.target === removedUuid) {
+                    target.target = undefined;
+                    targetRemoved.push(targeterUuid);
+                }
             }
+            emit(TargetRemovedEvent, removedUuid, targetRemoved);
         }
-        emit(TargetRemovedEvent, uuid, targetRemoved);
     }
 });
 

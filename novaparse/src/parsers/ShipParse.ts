@@ -243,6 +243,7 @@ export async function ShipParse(ship: ShipResource,
         escortUpgradeCost: ship.escortUpgradeCost,
         escortSellValue: ship.escortSellValue,
         escortType: ship.escortType,
+        flags3: ship.flags3,
         animation,
         vulnerableTo: ["normal"], // TODO: Parse if it's vulnerable to point defense
         ...base

@@ -69,6 +69,7 @@ class ShipResource extends BaseResource {
     escortUpgradeCost: number;
     escortSellValue: number;
     escortType: number;
+    flags3: number;
 
     constructor(resource: Resource, idSpace: NovaResources) {
         super(resource, idSpace);
@@ -207,6 +208,12 @@ class ShipResource extends BaseResource {
         this.escortUpgradeCost = d.getInt32(1834);
         this.escortSellValue = d.getInt32(1838);
         this.escortType = d.getInt16(1842);
+
+        // Third flags word (u16 @ raw 1830 = 0x726 → runtime ship-type
+        // +0x9ec; NOT flagsN@74 or flags2N@98 — adjacency verified against
+        // the binary's loader @004c13fd). Bit 0x2 = short trader park wait
+        // (rand(75)+100 instead of rand(200)+300, FUN_00405590).
+        this.flags3 = d.getUint16(1830);
     }
 }
 

@@ -36,6 +36,9 @@ export interface ShipData extends SpaceObjectData {
     escortUpgradeCost: number;            // EscUpgrdCost: what paying for the upgrade costs
     escortSellValue: number;              // EscSellValue: escort sale price; 0 = default 10% of price
     escortType: number;                   // 0 fighter, 1 light warship, 2 warship, 3 freighter
+    flags3: number;                       // raw shïp +0x726 (1830) u16, a THIRD flags word (runtime
+                                          // ship-type +0x9ec — not flags2N@98). Bit 0x2 = short trader
+                                          // park wait: rand(75)+100 instead of rand(200)+300 frames
 };
 
 export function getDefaultShipData(): ShipData {
@@ -59,6 +62,7 @@ export function getDefaultShipData(): ShipData {
         upgradeTo: null,
         escortUpgradeCost: 0,
         escortSellValue: 0,
-        escortType: 0
+        escortType: 0,
+        flags3: 0
     }
 }
