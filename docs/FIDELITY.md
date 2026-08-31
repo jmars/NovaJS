@@ -30,7 +30,7 @@ audit) instead of after a user reports them.
 |---|---|---|---|---|
 | RNG (Park-Miller LCG) | `nova/src/player/pilot_files.ts` | FUN_004683b0 | VERIFIED | mult 0x41a7, mod 0x7fffffff, carry 0x80000001, state DAT_007ccdd8 |
 | Per-frame tick | — | FUN_0044aa70 | APPROXIMATED | port uses ECS `world.step()` |
-| Ambient ship manager | `nova/src/nova_plugin/ambient_plugin.ts` | FUN_0041af90 | VERIFIED | Population-event driven: one burst per jump-in / landing / liftoff / boarding (PopulateResource pending counter; LandEvent/LiftoffEvent/BoardedEvent each queue one), running the sÿst+0x64 ambient rolls (stock 0-10, median 3) with the binary's single rand(7) routing: rand(7)==0 → përs (FUN_004235c0), else rand(7)==0 → flët (FUN_00425280), else dûde (FUN_0041ba80). sÿst Peripherals pairs run first at rand(100)+1 <= percent. No per-frame pass (the old every-30-frames port pass is removed) |
+| Ambient ship manager | `nova/src/nova_plugin/ambient_plugin.ts` | FUN_0041af90 | VERIFIED | Population-event driven: one burst per jump-in (fresh world per jump) + one per land cycle at the LANDING transition (LandEvent queues it; liftoff/boarding never repopulate — FUN_0041af90's only in-flight caller is FUN_00457580, called once from the player tick on the first frame the land key holds; the other 6 callers are death/reset, jump-arrival, main screen, load pilot, new game). Each burst runs the sÿst+0x64 ambient rolls (stock 0-10, median 3) with the binary's single rand(7) routing: rand(7)==0 → përs (FUN_004235c0), else rand(7)==0 → flët (FUN_00425280), else dûde (FUN_0041ba80). sÿst Peripherals pairs run first at rand(100)+1 <= percent. Spawn positions are system-relative: dûde ships scatter rand(1500)-750 around the system origin (0,0) (FUN_0041ba80; FUN_004254b0 tail likewise; AI==3 ships anchor to spob-0 x/y), flët leads at spob x/y else origin (FUN_004259b0). No per-frame pass (the old every-30-frames port pass is removed) |
 | Fleet spawn | `fleet_plugin.ts` | FUN_00425280 / FUN_004259b0 | PORTED | rand(256) into the 256-slot flët table; a hit warps in the whole flët (lead + escort groups, group count = min + rand(max−min+1)). Every ship carries the FLËT's own govt (FUN_004259b0: slot+0x98 = flët record +2 — never the ship class's inherent govt) and rolls aggress rand(3)² (FUN_004254b0); only 6/49 of ambient rolls reach this branch |
 | Pers spawn | `pers_plugin.ts` | FUN_004235c0 | VERIFIED | rand(1022); pers.govt; only 1/7 of rolls reach this branch |
 | Dude branch | `nova/src/nova_plugin/ambient_plugin.ts` (+`dude.ts` weightedPick, `SystemData.dudePairs`) | FUN_0041ba80 | PORTED | 36/49 of ambient rolls (dominant). Weighted-picks a dûde entry from the sÿst's 8-pair list (FUN_0046b600, raw counts as weights), then a (ship class,count) pair from the dûde's 16 pairs (FUN_0046b4b0), spawns ONE ship with dûde govt + AI (makeDudeShip). Slot search 1..55 → port counts ship entity keys (DUDE_SLOT_LIMIT=55). Draw counts inside the two weighted picks + the ±750 scatter are port-defined (binary internals not recovered) |
@@ -100,6 +100,17 @@ when audited.
    govt +2, flags/STR# +6, 16 ship classes +8, 16 counts +0x28 (74-byte runtime
    entry in DAT_005912cc, 512 entries). Fix = parse dûdes + sÿst pairs and
    replace global fleet/pers draw as the dominant ambient source.
+   RE-VERIFIED (landing-repop audit, byte-level): the later reading that the
+   +0x44..0x63 table is "16 per-spob flët ids" is WRONG. Proof: FUN_0046b600
+   loops slots **0..7 only**, reading ids at runtime sÿst+0x4a (= file +0x44,
+   valid 0..0x1ff after the loader's 0x80 rebase = the 512-entry dûde table) and
+   using the words at runtime +0x5a (= file **+0x54**) as weighted-pick
+   weights; FUN_0041ba80 indexes the picked id into DAT_005912cc (stride 0x4a =
+   the dûde runtime table), not the flët table (DAT_005914a4, 256 × 0x124,
+   FUN_00425280; përs = DAT_005912d4, 1024 × 0x794, FUN_004235c0). Stock bytes
+   agree: sÿst 128's +0x54 words are 30,10,12,5,12,10,1,20 (weights summing to
+   100), not 0x80-based ids. FUN_0041ba80 spawns ONE dûde-branch ship per roll
+   (first free slot 1..55), govt = dûde+2, AI = dûde+0 else shíd+0x12.
 2. ~~**Dude branch FUN_0041ba80**~~ — PORTED (ambient_plugin.ts; see table row). Sÿst dûde pairs / roll count / government / përs peripherals parse via SystResource + SystemParse.
    ported. Requires dûde + sÿst parsing (backlog item 1).
 3. ~~**Combat damage path** (projectile/beam/blast)~~ — AUDITED + FIXED (see combat table): beam decay, blast square range / player-only self-blast / projectile double-dip, shield −10% floor, and the FUN_0042f270 moving-toward angular gate (replacing the unverified prox-safety window) are ported; remaining approximations noted inline (friendly no-disable clamp, beam charge window, beam splash).

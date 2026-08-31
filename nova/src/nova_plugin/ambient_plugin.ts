@@ -1,14 +1,23 @@
 // The ambient population event, ported from the binary's ship-population
 // manager FUN_0041af90: at every POPULATION EVENT — jump-in (fresh world
-// per jumpTo), landing, liftoff and boarding (FUN_00486880@00486c5c,
-// FUN_00486ed0@004870b1, FUN_00489d70@0048a75a) — the system makes its
-// sÿst+0x64 ambient rolls (raw sÿst+0x64; stock 0-10, median 3) and never
-// rolls again while the player just flies around. Each roll routes with
-// rand(7): 0 takes the përs branch (FUN_004235c0, pers_plugin), otherwise
-// rand(7)==0 takes the flët branch (FUN_00425280, fleet_plugin), otherwise
-// the DÛDE branch (FUN_0041ba80) — 36/49 of rolls, the dominant spawner.
-// Before the rolls, the sÿst "Peripherals" përs pairs each warp in on
-// rand(100)+1 <= percent.
+// per jumpTo) and the LANDING transition — the system makes its sÿst+0x64
+// ambient rolls (raw sÿst+0x64; stock 0-10, median 3) and never rolls
+// again while the player just flies around. The binary's full caller list
+// of FUN_0041af90 (7 sites) has exactly one in-flight burst: FUN_00457580
+// runs it once on the first frame the land key holds a landable spob
+// (FUN_0044aa70@0044bdda); liftoff and boarding never repopulate. Each
+// roll routes with rand(7): 0 takes the përs branch (FUN_004235c0,
+// pers_plugin), otherwise rand(7)==0 takes the flët branch (FUN_00425280,
+// fleet_plugin), otherwise the DÛDE branch (FUN_0041ba80) — 36/49 of
+// rolls, the dominant spawner. Before the rolls, the sÿst "Peripherals"
+// përs pairs each warp in on rand(100)+1 <= percent.
+//
+// Spawn positions are system-relative, not player-relative: the dûde
+// branch scatters rand(1500)-750 around the SYSTEM ORIGIN (0,0)
+// (FUN_0041ba80; FUN_004254b0's tail likewise), and the flët lead spawns
+// at its spob's position or the origin (FUN_004259b0) with escorts
+// scattered around it — so the burst never materializes on top of the
+// landed player.
 //
 // The dûde branch is why stock systems don't melee: a dûde's ships all
 // carry the DÛDE's government, and a system's dûde table is its own
@@ -27,7 +36,7 @@ import { PersData } from "novadatainterface/PersData";
 import { ShipData } from "novadatainterface/ShipData";
 import { SystemData } from "novadatainterface/SystemData";
 import { AsyncSystem } from "nova_ecs/async_system";
-import { Entities, GetWorld, RunQuery, UUID } from "nova_ecs/arg_types";
+import { Entities, GetWorld, RunQuery, RunQueryFunction, UUID } from "nova_ecs/arg_types";
 import { Position } from "nova_ecs/datatypes/position";
 import { EntityMap } from "nova_ecs/entity_map";
 import { MovementStateComponent } from "nova_ecs/plugins/movement_plugin";
@@ -42,7 +51,6 @@ import { MissionEnvResource } from "../missions/mission_plugin";
 import { PlayerState } from "../player/player_state";
 import { PlayerStateResource } from "../player/player_state_component";
 import { randInt, seedRng } from "../player/pilot_files";
-import { BoardedEvent } from "./interaction_events";
 import {
     AMBIENT_GATE,
     AmbientSeedResource,
@@ -57,13 +65,13 @@ import {
 import { makeDudeShip, weightedPick } from "./dude";
 import { GameDataResource } from "./game_data_resource";
 import { PERS_TABLE_ROLL, persActive, spawnPersShip, weaponOutfitMap } from "./pers_plugin";
-import { LandEvent, LiftoffEvent } from "./planet_plugin";
+import { LandEvent } from "./planet_plugin";
 import { ShipDataComponent } from "./ship_plugin";
 import { SystemIdResource } from "./system_id_resource";
 
 // How many population bursts are queued. 1 at world build covers the
-// jump-in (a fresh world is built per jump); landing, liftoff and boarding
-// each queue one more.
+// jump-in (a fresh world is built per jump); the landing transition
+// queues one more (the binary's only in-flight burst).
 export const PopulateResource =
     new Resource<{ pending: number }>('PopulateResource');
 
@@ -138,8 +146,8 @@ async function spawnDudeAmbient(gameData: GameDataInterface,
     }
 
     const ship = makeDudeShip(dude, shipData);
-    // FUN_0041ba80's rand(1500)-750 x/y scatter around the player, on the
-    // shared engine LCG like the binary's.
+    // FUN_0041ba80's rand(1500)-750 x/y scatter around the SYSTEM ORIGIN
+    // (0,0), on the shared engine LCG like the binary's.
     const movement = ship.components.get(MovementStateComponent)!;
     movement.position = new Position(origin.x + randInt(1500) - 750,
         origin.y + randInt(1500) - 750);
@@ -267,16 +275,21 @@ const PopulateSystem = new AsyncSystem({
     args: [GameDataResource, SystemIdResource, Entities, GetWorld, RunQuery,
         SingletonComponent] as const,
     exclusive: true,
-    async step(gameData, systemId, entities, world, runQuery) {
+    async step(gameData, systemId, entities, world, runQuery, _singleton) {
         // One burst per population event. The pending counter is read and
         // decremented on the LIVE resource (not the immer draft): the
-        // land/liftoff/boarding systems increment it between runs, and a
-        // draft patch would clobber their increments.
+        // landing system increments it between runs, and a draft patch
+        // would clobber its increment.
         const pending = world.resources.get(PopulateResource);
         if (!pending || pending.pending <= 0) {
             return;
         }
         pending.pending--;
+
+        // Cull far ambient ships at the start of each burst (the binary's
+        // FUN_0041ad50 repop cull), not every frame — so population decays
+        // between population events instead of mid-flight.
+        cullFarAmbient(runQuery, entities);
 
         const state = world.resources.get(PlayerStateResource);
         const env = world.resources.get(MissionEnvResource);
@@ -295,7 +308,12 @@ const PopulateSystem = new AsyncSystem({
         if (!systemData) {
             return;
         }
-        const origin = playerPosition(runQuery);
+        // Ambient spawns are system-relative: FUN_0041ba80 scatters its
+        // ships rand(1500)-750 around the system origin (0,0), and
+        // FUN_004254b0/FUN_004259b0 do the same or anchor to a spob —
+        // never around the player. playerPosition stays in play only for
+        // the despawn leash (AmbientDespawnSystem).
+        const origin = new Position(0, 0);
 
         // Weapon->outfit map for përs spawns, computed at most once per
         // burst.
@@ -325,14 +343,16 @@ const PopulateSystem = new AsyncSystem({
     },
 });
 
-// Distance despawn, approximating FUN_004687b0's far test (per-frame
-// per-ship in ~41 AI functions): ambient ships too far from the player are
-// silently removed — no death event, no përs death, so a despawned përs
-// can respawn at a later population event. The binary scales the threshold
-// with the ship's top speed (FUN_004637a0 vs consts 100.0/-0.241/0.0),
-// with unrecoverable operand units; the port leashes at the larger of a
-// fixed floor and top-speed × scale. Fresh spawns (±750 scatter) sit well
-// inside the floor.
+// Distance despawn, approximating FUN_004687b0's far test: ambient ships
+// too far from the player are silently removed — no death event, no përs
+// death, so a despawned përs can respawn at a later population event. The
+// binary removes far ambient ships at each POPULATION EVENT (FUN_0041ad50
+// during repop), not every frame — so this runs once per burst, at the
+// start of PopulateSystem, and population decays between events rather than
+// being wiped mid-flight (which would strand a landing burst spawned far
+// from the origin). The threshold scales with top speed (FUN_004637a0 vs
+// consts 100.0/-0.241/0.0), with unrecoverable operand units; the port
+// leashes at the larger of a fixed floor and top-speed × scale.
 export const AMBIENT_DESPAWN_MIN_DIST = 2400;
 export const AMBIENT_DESPAWN_SPEED_SCALE = 8;
 
@@ -346,28 +366,25 @@ function isAmbientKey(key: string): boolean {
 const AmbientShipQuery = new Query([UUID, MovementStateComponent,
     Optional(ShipDataComponent)] as const);
 
-const AmbientDespawnSystem = new System({
-    name: 'AmbientDespawnSystem',
-    args: [SingletonComponent, RunQuery, Entities] as const,
-    step(_singleton, runQuery, entities) {
-        const origin = playerPosition(runQuery);
-        for (const [uuid, movement, shipData] of runQuery(AmbientShipQuery)) {
-            if (!isAmbientKey(uuid)) {
-                continue;
-            }
-            const leash = Math.max(AMBIENT_DESPAWN_MIN_DIST,
-                (shipData?.physics.speed ?? 0) * AMBIENT_DESPAWN_SPEED_SCALE);
-            if (movement.position.subtract(origin).lengthSquared
-                > leash * leash) {
-                entities.delete(uuid);
-            }
+function cullFarAmbient(runQuery: RunQueryFunction, entities: EntityMap): void {
+    const origin = playerPosition(runQuery);
+    for (const [uuid, movement, shipData] of runQuery(AmbientShipQuery)) {
+        if (!isAmbientKey(uuid)) {
+            continue;
         }
-    },
-});
+        const leash = Math.max(AMBIENT_DESPAWN_MIN_DIST,
+            (shipData?.physics.speed ?? 0) * AMBIENT_DESPAWN_SPEED_SCALE);
+        if (movement.position.subtract(origin).lengthSquared
+            > leash * leash) {
+            entities.delete(uuid);
+        }
+    }
+}
 
-// Landing, liftoff and boarding each queue one population burst. Three
-// systems because an event data arg only resolves while that event is the
-// one being run.
+// The landing transition queues one population burst — the binary's
+// FUN_00457580 is FUN_0041af90's only in-flight caller (one burst per land
+// cycle, on the first frame the land key holds); liftoff and boarding
+// never repopulate.
 function queuePopulate(world: World): void {
     const pending = world.resources.get(PopulateResource);
     if (pending) {
@@ -384,24 +401,6 @@ const PopulateOnLandSystem = new System({
     },
 });
 
-const PopulateOnLiftoffSystem = new System({
-    name: 'PopulateOnLiftoffSystem',
-    events: [LiftoffEvent],
-    args: [LiftoffEvent, GetWorld] as const,
-    step(_event, world) {
-        queuePopulate(world);
-    },
-});
-
-const PopulateOnBoardedSystem = new System({
-    name: 'PopulateOnBoardedSystem',
-    events: [BoardedEvent],
-    args: [BoardedEvent, GetWorld] as const,
-    step(_event, world) {
-        queuePopulate(world);
-    },
-});
-
 // Owns the population event: FUN_0041af90's burst, the event
 // subscriptions and the distance despawn.
 export const AmbientPlugin: Plugin = {
@@ -412,8 +411,5 @@ export const AmbientPlugin: Plugin = {
         world.resources.set(DudeCounterResource, { next: 0 });
         world.addSystem(PopulateSystem);
         world.addSystem(PopulateOnLandSystem);
-        world.addSystem(PopulateOnLiftoffSystem);
-        world.addSystem(PopulateOnBoardedSystem);
-        world.addSystem(AmbientDespawnSystem);
     },
 };

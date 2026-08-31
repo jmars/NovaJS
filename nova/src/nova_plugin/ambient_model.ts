@@ -18,7 +18,9 @@
 //
 //   otherwise the dûde branch (FUN_0041ba80): rand(pairWeightTotal) picks
 //   the dûde entry, rand(shipWeightTotal) its ship class, then two
-//   rand(1500) draws scatter the ship ±750 around the player.
+//   rand(1500) draws scatter the ship ±750 around the system origin
+//   (0,0) — FUN_0041ba80 positions are system-relative, never
+//   player-relative.
 //
 //   Every spawned DÛDE and FLËT ship additionally rolls aggress =
 //   rand(3) ^ 2 (FUN_004254b0/FUN_0041ba80): one rand(3) draw at ship

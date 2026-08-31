@@ -5,7 +5,9 @@
 // 36/49 dominant routing share, the DUDE_SLOT_LIMIT=55 slot bound, the
 // exact-shares burst (each roll of the always-spawning fixtures lands one
 // ship), zero spawns on plain frames, the sÿst Peripherals përs, and one
-// burst per LandEvent/LiftoffEvent/BoardedEvent. Run with:
+// burst per land cycle (LandEvent queues it; LiftoffEvent and BoardedEvent
+// queue nothing — FUN_0041af90's only in-flight caller is the landing
+// transition FUN_00457580). Run with:
 //   npx esbuild --bundle --platform=node nova/src/nova_plugin/ambient_dude_test.ts \
 //       --outfile=/tmp/ambient_dude_test.js && node_modules/.bin/jasmine /tmp/ambient_dude_test.js
 
@@ -321,12 +323,8 @@ describe("population-event wiring", () => {
         expect(ambientKeys().length).toEqual(afterBurst);
     });
 
-    for (const [name, event] of [
-        ["LandEvent", LandEvent],
-        ["LiftoffEvent", LiftoffEvent],
-        ["BoardedEvent", BoardedEvent],
-    ] as const) {
-        it(`queues exactly one burst per ${name}`, async () => {
+    it("queues exactly one burst on LandEvent (the landing transition)",
+        async () => {
             setSystem({ rollCount: 3, peripheralPercent: null });
             // 1022 përs + 256 flëts make every branch's table draw hit, so
             // each of the burst's 3 rolls lands exactly one ship whatever
@@ -334,7 +332,7 @@ describe("population-event wiring", () => {
             const { emit, ambientKeys, stepFrames } = await makeTestWorld(
                 makePlayerState(7), 1022, 256);
             const afterBurst = ambientKeys().length;
-            await emit(event);
+            await emit(LandEvent);
             // Step 1 runs the queued event's burst; step 2 lands its
             // spawn patches (AsyncSystem applies them one run later).
             await stepFrames(2);
@@ -345,20 +343,40 @@ describe("population-event wiring", () => {
             await stepFrames(5);
             expect(ambientKeys().length).toEqual(afterEvent);
         });
+
+    for (const [name, event] of [
+        ["LiftoffEvent", LiftoffEvent],
+        ["BoardedEvent", BoardedEvent],
+    ] as const) {
+        it(`queues no burst on ${name} — the binary repopulates only at`
+            + " the landing transition", async () => {
+            setSystem({ rollCount: 3, peripheralPercent: null });
+            const { emit, ambientKeys, stepFrames } = await makeTestWorld(
+                makePlayerState(7), 1022, 256);
+            const afterBurst = ambientKeys().length;
+            await emit(event);
+            await stepFrames(2);
+            expect(ambientKeys().length).toEqual(afterBurst);
+            await stepFrames(5);
+            expect(ambientKeys().length).toEqual(afterBurst);
+        });
     }
 
-    it("queues one burst per event across land, liftoff and boarding",
+    it("runs one burst per land cycle: liftoff and boarding add none",
         async () => {
             setSystem({ rollCount: 1, peripheralPercent: null });
             // Every roll spawns exactly one ship whatever the routing
-            // (always-hit tables).
+            // (always-hit tables). Only the landing adds a burst.
             const { emit, ambientKeys, stepFrames } = await makeTestWorld(
                 makePlayerState(7), 1022, 256);
             let expected = ambientKeys().length;
-            for (const event of [LandEvent, LiftoffEvent, BoardedEvent]) {
+            await emit(LandEvent);
+            await stepFrames(2);
+            expected += 1;
+            expect(ambientKeys().length).toEqual(expected);
+            for (const event of [LiftoffEvent, BoardedEvent]) {
                 await emit(event);
                 await stepFrames(2);
-                expected += 1;
                 expect(ambientKeys().length).toEqual(expected);
             }
         });

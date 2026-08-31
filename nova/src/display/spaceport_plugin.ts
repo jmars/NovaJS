@@ -106,9 +106,10 @@ const LandSystem = new System({
                     queuePlayerStateSave();
                 }
                 entities.set(shipUuid, newShip);
-                // The ship is back in the world: liftoff repopulates the
-                // system's ambient ships (FUN_00486ed0@004870b1), like the
-                // landing above.
+                // The ship is back in the world. Liftoff itself never
+                // repopulates (FUN_0041af90's only in-flight caller is the
+                // landing transition, FUN_00457580); the event is emitted
+                // for display/logic consumers.
                 world?.emit(LiftoffEvent, { id, uuid: shipUuid }, [newShip]);
             });
     }

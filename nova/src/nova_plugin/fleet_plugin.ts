@@ -4,9 +4,9 @@
 // drawn into the 256-slot flët table per flët roll, and if the drawn slot
 // is eligible that flët (lead ship + escort groups) warps in as plain
 // NPCs. The roll is reached from ambient_plugin's PopulateSystem at each
-// population event (jump-in, landing, liftoff, boarding) — the binary runs
-// FUN_0041af90 only at those, never per frame. 6/49 of ambient rolls take
-// this branch (rand(7) misses the përs branch, then rand(7) == 0).
+// population event (jump-in, landing) — the binary runs FUN_0041af90 only
+// at those, never per frame. 6/49 of ambient rolls take this branch
+// (rand(7) misses the përs branch, then rand(7) == 0).
 //
 // Flagged approximation: flëts are atmosphere-only in EV Nova, approximated
 // by requiring at least one inhabited planet (spöb 0x20 cleared) in the
