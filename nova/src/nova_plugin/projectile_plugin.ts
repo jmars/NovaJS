@@ -24,12 +24,25 @@ import { FireSubs, OwnerComponent, SourceComponent, SubCounts, VulnerableToPD, W
 import { GameDataResource } from './game_data_resource';
 import { firstOrderWithFallback, Guidance, GuidanceComponent } from './guidance';
 import { ArmorComponent, ShieldComponent } from './health_plugin';
+import { PlayerShipSelector } from './player_ship_plugin';
 import { ProjectileBlastHull, ProjectileComponent, ProjectileDataComponent } from './projectile_data';
 import { ReturnToQueueComponent } from './return_to_queue_plugin';
 import { SoundEvent } from './sound_event';
 import { Stat } from './stat';
 import { TargetComponent } from './target_component';
 
+
+// EV Nova's splash range is a SQUARE aligned with the impact point:
+// a candidate is hit iff |dx| <= blastRadius && |dy| <= blastRadius
+// (FUN_00435830 / FUN_00437780 splash loops), not a circle.
+export function squareBlastHull(radius: number): CompositeHull {
+    const corners: Array<[number, number]> = [
+        [-radius, -radius], [radius, -radius], [radius, radius], [-radius, radius],
+    ];
+    // Same winding conversion hullFromAnimation uses for sprite hulls.
+    return new CompositeHull([new SAT.Polygon(new SAT.Vector(0, 0),
+        corners.slice().reverse().map(([x, y]) => new SAT.Vector(x, -y)))]);
+}
 
 class ProjectileWeaponEntry extends WeaponEntry {
     declare data: ProjectileWeaponData;
@@ -105,10 +118,8 @@ class ProjectileWeaponEntry extends WeaponEntry {
             }
 
             if (this.data.blastRadius) {
-                const blastHull = new CompositeHull([
-                    new SAT.Circle(new SAT.Vector(0, 0), this.data.blastRadius)
-                ]);
-                projectile.components.set(ProjectileBlastHull, blastHull);
+                projectile.components.set(ProjectileBlastHull,
+                    squareBlastHull(this.data.blastRadius));
             }
 
             return projectile;
@@ -237,9 +248,8 @@ const ProjectileCollisionSystem = new System({
     name: 'ProjectileCollisionSystem',
     events: [CollisionEvent],
     args: [CollisionEvent, Entities, UUID, ProjectileDataComponent,
-        Optional(OwnerComponent), FireSubs, TimeResource, CreateTime, EmitNow] as const,
-    step(collision, entities, uuid, projectileData, owner, fireSubs, time,
-        createTime, emitNow) {
+        Optional(OwnerComponent), FireSubs, EmitNow] as const,
+    step(collision, entities, uuid, projectileData, owner, fireSubs, emitNow) {
         const other = entities.get(collision.other);
         if (!other) {
             return;
@@ -254,15 +264,36 @@ const ProjectileCollisionSystem = new System({
             return;
         }
 
-        if (projectileData.proxSafety * 1000 + createTime > time.time) {
-            // Prox safety is still active. Do not collide.
-            return;
-        }
-
         const self = entities.get(uuid);
         if (!self) {
             console.warn(`Missing projectile ${uuid} that is colliding`);
             return;
+        }
+
+        // EV Nova's projectile hit path (FUN_0042f270) has no launch-age
+        // no-collide window (the old proxSafety*1000+createTime check had
+        // no binary counterpart). Its moving-toward gate: a candidate is
+        // only damaged when |angleTo(candidate) - projectileDir| is within
+        // round(candidateSpriteWidth * 0.66) * 10 / 32 degrees, next to a
+        // distance test the port's hull collision already covers. The
+        // radius proxy below approximates the binary's current-frame sprite
+        // width with the candidate's hull bounding box; the binary compares
+        // raw integer degrees without 360° wraparound, which this port's
+        // normalized angles smooth into a symmetric cone.
+        const selfMovement = self.components.get(MovementStateComponent);
+        const otherMovement = other.components.get(MovementStateComponent);
+        const otherHull = other.components.get(HurtboxHullComponent);
+        if (selfMovement && otherMovement && otherHull) {
+            const targetSize = Math.max(
+                otherHull.bbox.maxX - otherHull.bbox.minX,
+                otherHull.bbox.maxY - otherHull.bbox.minY);
+            const relative = otherMovement.position
+                .subtract(selfMovement.position).angle
+                .subtract(selfMovement.rotation).angle;
+            if (Math.abs(relative) > Math.round(targetSize * 0.66) * 10 / 32
+                * Math.PI / 180) {
+                return;
+            }
         }
 
         emitNow(DamagedEvent, { damage: projectileData.damage, damager: uuid }, [collision.other]);
@@ -304,20 +335,22 @@ const ProjectileBlastSystem = new System({
         ProjectileExplodeEvent] as const,
     step(projectileData, blastHull, hitter, movement, owner, entities, other) {
         const blastIgnore = new Set<string>();
-        // TODO: Tag ship that was hit as immune to explosion, since it's already hit.
-        if (!projectileData.blastHurtsFiringShip && owner) {
-            // TODO: Compute this accounting for subs, escorts, etc.
-            blastIgnore.add(owner.owner);
-            // const projectile
-            // blast.components.set(BlastIgnoreComponent,
-            //                      new Set([projectile.]));
+        // EV Nova splash (FUN_00435830) skips a candidate only when it is
+        // the shooter AND (weapon flag 0x100 is set OR the shooter isn't
+        // the player): only the player (slot 0) ever takes their own blast
+        // splash; NPCs are immune to it.
+        if (owner) {
+            const ownerIsPlayer = entities.get(owner.owner)
+                ?.components.has(PlayerShipSelector) ?? false;
+            if (!projectileData.blastHurtsFiringShip || !ownerIsPlayer) {
+                blastIgnore.add(owner.owner);
+            }
         }
 
-        if (other) {
-            // The projectile already damaged this entity, so
-            // the blast should ignore it.
-            blastIgnore.add(other.uuid);
-        }
+        // The entity the projectile directly hit is deliberately NOT
+        // ignored: projectile explosions double-dip in EV Nova (direct hit
+        // and splash both apply — the projectile splash loop has no
+        // direct-victim skip, unlike the beam splash loop in FUN_00437780).
 
         const damage = projectileData.damage;
         const blast = new Entity(`${projectileData.name} Blast`)

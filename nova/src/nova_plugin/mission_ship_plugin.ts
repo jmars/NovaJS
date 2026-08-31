@@ -359,7 +359,9 @@ async function spawnMissionShip(gameData: GameDataInterface, env: MissionEnv,
         ship.components.set(ShieldComponent, new Stat({
             current: 0,
             max: physics.shield,
-            min: -physics.shield * 0.05,
+            // EV Nova floors the shield at -10% of max (FUN_004192d0,
+            // DAT_00575208): bounded overshoot, no armor spill.
+            min: -physics.shield * 0.1,
             recharge: physics.shieldRecharge,
         }));
     }

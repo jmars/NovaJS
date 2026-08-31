@@ -148,6 +148,9 @@ export interface NotBayWeaponData extends BaseWeaponData {
     blastRadius: number;
     blastHurtsFiringShip: boolean,
     detonateWhenShotExpires: boolean,
+    // Beam damage loses 1 point of shield and armor damage per decay ms of
+    // firing (EV Nova wd[+0x1a] in frames; 0 = never decays).
+    decay: number;
     damageType: DamageType; // Should this be a set?
 }
 
@@ -170,6 +173,7 @@ export function getDefaultNotBayWeaponData(): NotBayWeaponData {
         blastRadius: 0,
         blastHurtsFiringShip: false,
         detonateWhenShotExpires: false,
+        decay: 0,
         damageType: "normal",
     }
 }

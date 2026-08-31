@@ -166,7 +166,7 @@ const BeamCollisionSystem = new System({
     args: [CollisionEvent, Entities, Optional(OwnerComponent),
         BeamDataComponent, CreateTime, EmitNow, TimeResource, UUID] as const,
     step(collision, entities, owner, beamData, fireTime, emitNow,
-        { time, delta_ms }, uuid) {
+        { time }, uuid) {
 
         const other = entities.get(collision.other);
         if (!other) {
@@ -184,12 +184,28 @@ const BeamCollisionSystem = new System({
         // Stray beams hurt whoever they hit, including a neutral player
         // (real EV Nova: NPCs do not target a neutral player, but their
         // stray fire still damages them).
-        const timeSinceFire = time - fireTime;
-        const lastTimeSinceFire = timeSinceFire - delta_ms;
-        const damageTime = Math.min(delta_ms, beamData.shotDuration - lastTimeSinceFire);
-        const scale = damageTime * 30 / 1000;
 
-        emitNow(DamagedEvent, { damage: beamData.damage, damager: uuid, scale }, [collision.other]);
+        // EV Nova beams hit for their full (decaying) damage every frame
+        // while overlapping (FUN_00437780 applies max(0, base - steps) to
+        // both shield and armor), unlike projectiles which hit once. The
+        // weapon tick FUN_00435830 increments a decay step every wd[+0x1a]
+        // frames (weap 0x22, parsed as decay) whether or not the beam is
+        // touching anything. Its frame counter only overflows when it goes
+        // strictly past the decay interval and then resets to zero, so the
+        // effective period is decay + 1 frames.
+        const FRAME_MS = 1000 / 30; // EV Nova's fixed 30fps tick
+        const timeSinceFire = time - fireTime;
+        const steps = beamData.decay > 0
+            ? Math.max(0,
+                Math.floor(timeSinceFire / (beamData.decay + FRAME_MS)))
+            : 0;
+        const damage = {
+            ...beamData.damage,
+            shield: Math.max(0, beamData.damage.shield - steps),
+            armor: Math.max(0, beamData.damage.armor - steps),
+        };
+
+        emitNow(DamagedEvent, { damage, damager: uuid }, [collision.other]);
     }
 });
 

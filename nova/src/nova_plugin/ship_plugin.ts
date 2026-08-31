@@ -136,7 +136,9 @@ const ShipShieldProvider = Provide({
         return new Stat({
             current: shield?.current ?? physics.shield,
             max: physics.shield,
-            min: -physics.shield * 0.05,
+            // EV Nova floors the shield at -10% of max (FUN_004192d0,
+            // DAT_00575208): bounded overshoot, no armor spill.
+            min: -physics.shield * 0.1,
             recharge: physics.shieldRecharge,
         });
     }
