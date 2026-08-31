@@ -90,7 +90,11 @@ export const ShootAllWeaponsAI = new System({
                 continue;
             };
             weapon.target = target;
-            weapon.firing = true;
+            // Only fire at a real target: an NPC with no target (or whose
+            // target died) must not spray its weapons into the void forever
+            // — the real game only discharges at an aimed target. Leave
+            // firing=true cleared so a dead target stops the volley.
+            weapon.firing = target !== undefined;
         }
     }
 });

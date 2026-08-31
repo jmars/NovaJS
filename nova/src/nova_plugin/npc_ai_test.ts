@@ -24,7 +24,8 @@ import { BoardingProfileComponent, makeDudeShip } from "./dude";
 import { DamagedEvent } from "./death_plugin";
 import { OwnerComponent } from "./fire_weapon_plugin";
 import { AIConfigComponent, AIStateComponent, NpcAIPlugin } from "./npc_ai_plugin";
-import { GovernmentComponent, NpcPlugin, playerIsHostile } from "./npc_plugin";
+import { GovernmentComponent, NpcPlugin, playerIsHostile,
+    ShootAllWeaponsComponent } from "./npc_plugin";
 import { PlayerStateResource } from "../player/player_state_component";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { PlanetComponent } from "./planet_plugin";
@@ -537,5 +538,23 @@ describe("legacy random-target AI vs the player", () => {
         // The player is the only valid target left, so the roll is forced.
         expect(npc.components.get(TargetComponent)!.target)
             .toEqual(player.uuid);
+    });
+
+    it("does not fire at nothing when it has no target", () => {
+        // Regression: ShootAllWeaponsAI used to set firing=true even with
+        // no target, so an idling NPC sprayed its weapons into the void
+        // forever (looked like it was circling and firing at a battle).
+        const world = makeRandomTargetWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip(TRADER_DUDE, [0, 0]));
+        npc.components.set(WeaponsStateComponent, new Map([
+            ["nova:200", { count: 4, firing: false }],
+        ]));
+        npc.components.set(ShootAllWeaponsComponent, undefined);
+        world.step();
+
+        const firing = npc.components.get(WeaponsStateComponent)!
+            .get("nova:200")!.firing;
+        expect(firing).toBeFalse();
     });
 });
