@@ -77,11 +77,24 @@ export const AIStateComponent = new Component<{
     lastScanMark?: string,
 }>('AIState');
 
-// FUN_00401800: an interceptor completing its comm-scan approach hails the
-// player (rand(100) ≤ 75) instead of dropping silently. The AI only fires
-// the event — the govt greeting text and the comm surface are the display
-// layer's business (the port does not yet parse the gövt greeting STR#).
-export const NpcHailEvent = new EcsEvent<{ from: string }>('NpcHailEvent');
+// FUN_00401800's hail surface: an interceptor completing its comm-scan
+// approach hails the player (rand(100) ≤ 75) instead of dropping silently.
+// `target` is the scanned player ship uuid — ScanSystem (scan_plugin)
+// consumes it to run the smuggling scan and, on a catch, make the hailing
+// ship attack. The AI only fires the event — the govt greeting text and
+// the comm surface are the display layer's business (the port does not
+// yet parse the gövt greeting STR#).
+export const NpcHailEvent = new EcsEvent<{ from: string, target: string }>(
+    'NpcHailEvent');
+
+// FUN_00408150's thrust-onset tick (ship +0xa4): armed when the ship's
+// thrust input crosses from 0, cleared on release. FUN_00401800's movement
+// grace waves through a player who has held thrust since before the
+// current tick. InterceptorScanSystem tracks the player's onset each tick
+// it runs; the port has no throttle ramp, so `accelerating` stands in for
+// throttle > 0.
+export const PlayerThrustComponent = new Component<{ onset: number | null }>(
+    'PlayerThrust');
 
 // AI types with the special-AI behavior set: 1 wimpy trader, 2 brave
 // trader, 3 warship, 4 interceptor (slot+0x88) and 6 mission special
@@ -469,15 +482,19 @@ const ScanCandidatesQuery = new Query([UUID, ShipComponent,
 // alive same-system ship that is NOT another interceptor (rejection
 // rand(0x40), never the last scan-mark +0x90) and flies straight at it
 // (substate 9) to within a 100px square (DAT_0057501c). At the square the
-// FUN_00401800 hail gate applies: the player (and only the player) is
-// hailed on rand(100) ≤ 75 — the port emits NpcHailEvent for the display
-// layer; the govt-greeting text, the mïsn-hostility hail variant and the
-// player-side anti-refire timer have no port model yet — and everything
-// else (NPC targets, failed rolls) drops silently to state 0. Scan
-// targets get NO pursuit memory: a gone target just drops. FUN_0040e020
-// keeps running every tick during state 7, so a fresh acquisition
-// (AggroRange setting a target) cancels the scan — attack wins. The rare
-// scan-duty mode (+0xc8d0 = 0x3ff, spawner FUN_0046ac50) is unported.
+// FUN_00401800 hail-scan applies to the player (and only the player):
+// the hailing ship must be AI 3/4 with an assigned government whose
+// SmugPenalty is nonzero, then rand(100) ≤ 75, then the FUN_00408150
+// movement grace — a player holding thrust from before this tick is waved
+// through. A fired hail emits NpcHailEvent for the display layer and runs
+// the smuggling scan (scan_plugin.smugglingScan); a catch makes the ship
+// ATTACK the player (FUN_00401800's tail: target 0, state 4). Everything
+// else (NPC targets, failed rolls, waved scans) drops silently to state 0.
+// Scan targets get NO pursuit memory: a gone target just drops.
+// FUN_0040e020 keeps running every tick during state 7, so a fresh
+// acquisition (AggroRange setting a target) cancels the scan — attack
+// wins. The rare scan-duty mode (+0xc8d0 = 0x3ff, spawner FUN_0046ac50)
+// is unported.
 const SCAN_REACH = 100;         // DAT_0057501c
 const SCAN_DRAW = 0x40;         // FUN_004683b0(0x40) rejection draw
 const SCAN_DRAW_LIMIT = 1000;   // the binary loops unbounded
@@ -486,14 +503,36 @@ const InterceptorScanSystem = new System({
     name: 'InterceptorScan',
     args: [AIConfigComponent, AIStateComponent, TargetComponent,
         MovementStateComponent, TimeResource, UUID, Entities, GetWorld,
-        Emit, ScanCandidatesQuery, PlayerQuery] as const,
+        Emit, ScanCandidatesQuery, PlayerQuery,
+        Optional(GovernmentComponent)] as const,
     after: [AggroRangeSystem],
-    step(config, state, target, movement, _time, uuid, entities,
-        _world: World, emit, candidates, players) {
+    step(config, state, target, movement, time, uuid, entities,
+        world: World, emit, candidates, players, govt) {
         if (config.aiType !== 4) {
             // FUN_00403de0 is the AI-4 brain exclusively.
             return;
         }
+
+        // Keep FUN_00408150's thrust-onset tick (ship +0xa4) fresh on the
+        // player every tick an interceptor runs, so the FUN_00401800
+        // movement grace at the hail reads a real onset.
+        const [playerUuid, playerMovement] = players[0] ?? [];
+        if (playerUuid !== undefined) {
+            const player = entities.get(playerUuid);
+            if (player) {
+                const thrust = player.components.get(PlayerThrustComponent);
+                if (playerMovement.accelerating > 0) {
+                    if (!thrust || thrust.onset === null) {
+                        player.components.set(PlayerThrustComponent,
+                            { onset: time.time });
+                    }
+                }
+                else if (thrust && thrust.onset !== null) {
+                    thrust.onset = null;
+                }
+            }
+        }
+
         if (target.target !== undefined) {
             // Attack wins over the scan (state 7's per-tick acquisition).
             state.scanTarget = undefined;
@@ -512,9 +551,39 @@ const InterceptorScanSystem = new System({
             const dy = Math.abs(scanMovement.position.y
                 - movement.position.y);
             if (dx <= SCAN_REACH && dy <= SCAN_REACH) {
-                if (players.some(([playerUuid]) => playerUuid === scanUuid)
-                    && randInt(100) <= 75) {
-                    emit(NpcHailEvent, { from: uuid });
+                if (playerUuid === scanUuid) {
+                    // FUN_00401800, wired into the completed scan approach.
+                    // Gates in the binary's order: AI 3/4, an assigned
+                    // government whose SmugPenalty is nonzero (a gate only
+                    // — the scan never applies it to the record), the
+                    // rand(100) ≤ 75 hail roll, then the FUN_00408150
+                    // movement grace: the skip test is (now − thrustOnset)
+                    // × systFactor / (fps × 89128.96) > 0, and the sÿst-
+                    // flags systFactor is always positive, so a player who
+                    // has held thrust since before this tick is waved
+                    // through. Visibility is the binary's FUN_00464a90;
+                    // the port's ships are per-system entities, so same-
+                    // system existence is the model.
+                    const hailingGovt = govt === undefined ? null
+                        : world.resources.get(MissionEnvResource)
+                            ?.government(govt.id) ?? null;
+                    const thrust = entities.get(playerUuid)?.components
+                        .get(PlayerThrustComponent);
+                    if (config.aiType >= 3 && config.aiType <= 4
+                        && hailingGovt !== null
+                        && hailingGovt.penalties.smuggling !== 0
+                        && randInt(100) <= 75
+                        && !(playerMovement.accelerating > 0
+                            && thrust?.onset !== undefined
+                            && thrust.onset !== null
+                            && thrust.onset < time.time)) {
+                        // The hail fires the smuggling scan + the catch
+                        // attack over in ScanSystem (scan_plugin). The
+                        // event names this ship so the system's components
+                        // resolve off the interceptor.
+                        emit(NpcHailEvent,
+                            { from: uuid, target: scanUuid }, [uuid]);
+                    }
                 }
                 state.lastScanMark = scanUuid;
                 state.scanTarget = undefined;

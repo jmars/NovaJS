@@ -12,6 +12,7 @@
 import "jasmine";
 import { MockGameData } from "novadatainterface/MockGameData";
 import { DudeData, getDefaultDudeData } from "novadatainterface/DudeData";
+import { getDefaultMissionData } from "novadatainterface/MissionData";
 import { getDefaultPlanetData, PlanetData } from "novadatainterface/PlanetData";
 import { getDefaultShipData, ShipData } from "novadatainterface/ShipData";
 import { Angle } from "nova_ecs/datatypes/angle";
@@ -25,17 +26,19 @@ import { World } from "nova_ecs/world";
 import { MissionEnv } from "../missions/mission_state_machine";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import { makePlayerState, makeTestEnv } from "../missions/test_fixtures";
+import { ActiveMission, PlayerState } from "../player/player_state";
 import { randInt, seedRng } from "../player/pilot_files";
 import { BoardingProfileComponent, makeDudeShip } from "./dude";
 import { DamagedEvent } from "./death_plugin";
 import { OwnerComponent } from "./fire_weapon_plugin";
 import { AIConfigComponent, AIStateComponent, NpcAIPlugin,
-    NpcHailEvent } from "./npc_ai_plugin";
+    NpcHailEvent, PlayerThrustComponent } from "./npc_ai_plugin";
 import { ChooseRandomTargetComponent, GovernmentComponent, NpcPlugin,
     playerIsHostile, ShootAllWeaponsComponent } from "./npc_plugin";
 import { PlayerStateResource } from "../player/player_state_component";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { PlanetComponent, PlanetDataComponent } from "./planet_plugin";
+import { ScanPlugin } from "./scan_plugin";
 import { makeShip } from "./make_ship";
 import { ArmorComponent, ShieldComponent } from "./health_plugin";
 import { ShipComponent, ShipDataComponent } from "./ship_plugin";
@@ -92,6 +95,8 @@ function makeWorld(envOverrides: Partial<MissionEnv> = {}): World {
     // the default world sits in the Polaris-owned system (nova:304).
     world.resources.set(SystemIdResource, "nova:304");
     world.addPlugin(NpcAIPlugin);
+    // ScanSystem consumes NpcHailEvent (the FUN_00401800 smuggle scan).
+    world.addPlugin(ScanPlugin);
     return world;
 }
 
@@ -1073,19 +1078,71 @@ describe("AI pursuit memory, comm-scan and travel fidelity", () => {
         expect(state.lostTarget).toBeUndefined();
     });
 
-    it("a completed player scan hails on the 76% roll", () => {
+    // A scanning Polaris (SmugPenalty != 0 gates the FUN_00401800 hail)
+    // and a smuggler mission (mïsn ScanMask 0x8000) for the catch specs.
+    function makeScanWorld(state: PlayerState | null = null,
+        missionFlags = 0): World {
+        const base = makeTestEnv().env;
+        const polaris = base.government("nova:130")!;
+        const scanPolaris = {
+            ...polaris,
+            scanFine: 500,
+            penalties: { ...polaris.penalties, smuggling: 20 },
+            scanMask: 0x8000,
+        };
+        const smugglerMission = {
+            ...getDefaultMissionData(),
+            id: "nova:507",
+            scanMask: 0x8000,
+            flags: missionFlags,
+        };
+        const world = makeWorld({
+            government: id => id === "nova:130" ? scanPolaris
+                : base.government(id),
+            missionByRawId: rawId => rawId === 507 ? smugglerMission
+                : base.missionByRawId(rawId),
+        });
+        world.resources.set(PlayerStateResource, state ?? makePlayerState());
+        return world;
+    }
+
+    // A pilot carrying one loaded mission whose cargo scans as 0x8000.
+    function makeSmugglerState(): PlayerState {
+        const state = makePlayerState();
+        state.activeMissions = [{
+            missionId: "nova:507",
+            originStellar: "nova:130",
+            travelStellar: null,
+            returnStellar: null,
+            travelComplete: false,
+            shipGoalComplete: false,
+            failed: false,
+            cargoLoaded: true,
+            cargo: { type: 42, qty: 10 },
+            deadline: null,
+            specialShips: null,
+            auxShips: null,
+        }];
+        return state;
+    }
+
+    function makeScanApproach(world: World) {
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+        const player = addEntity(world, "player", makePlayerShip([80, 0]));
+        npc.components.set(AIStateComponent,
+            { anger: 0, attackedBy: null, fleeing: false,
+                scanTarget: player.uuid, lastScanMark: player.uuid });
+        const hails = capture(world, NpcHailEvent);
+        return { npc, player, hails };
+    }
+
+    it("a completed player scan hails on the 76% roll (scanning govt)", () => {
         const [hailSeed, waveSeed] = hailSeeds();
         for (const [seed, expectHail] of [[hailSeed, true],
             [waveSeed, false]] as const) {
-            const world = makeWorld();
-            const npc = addEntity(world, "npc",
-                makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
-            const player = addEntity(world, "player",
-                makePlayerShip([80, 0]));
-            npc.components.set(AIStateComponent,
-                { anger: 0, attackedBy: null, fleeing: false,
-                    scanTarget: player.uuid, lastScanMark: player.uuid });
-            const hails = capture(world, NpcHailEvent);
+            const world = makeScanWorld();
+            const { npc, player, hails } = makeScanApproach(world);
             // The hail roll is the step's first draw.
             seedRng(seed);
             world.step();
@@ -1093,9 +1150,96 @@ describe("AI pursuit memory, comm-scan and travel fidelity", () => {
             const state = npc.components.get(AIStateComponent)!;
             expect(state.scanTarget).toBeUndefined();
             expect(hails.events).toEqual(expectHail
-                ? [{ from: npc.uuid }] : []);
+                ? [{ from: npc.uuid, target: player.uuid }] : []);
+            // A clean hold: no catch, no attack, no fine.
+            expect(npc.components.get(TargetComponent)!.target)
+                .toBeUndefined();
+            expect(world.resources.get(PlayerStateResource)!.credits)
+                .toEqual(25000);
         }
     });
+
+    it("a government without SmugPenalty never hails", () => {
+        const [hailSeed] = hailSeeds();
+        const world = makeWorld(); // plain Polaris: SmugPenalty 0
+        const { npc, hails } = makeScanApproach(world);
+        seedRng(hailSeed);
+        world.step();
+        expect(hails.events).toEqual([]);
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+    });
+
+    it("the movement grace waves through a player holding thrust", () => {
+        // FUN_00408150 arms ship +0xa4 at thrust onset; FUN_00401800 skips
+        // while (now − onset) × systFactor > 0 and the systFactor (sÿst
+        // flags) is always positive.
+        const [hailSeed] = hailSeeds();
+        const world = makeScanWorld();
+        const { npc, player, hails } = makeScanApproach(world);
+        const movement = player.components.get(MovementStateComponent)!;
+        movement.accelerating = 1;
+        player.components.set(PlayerThrustComponent,
+            { onset: TIME.time - 1 });
+        seedRng(hailSeed);
+        world.step();
+        expect(hails.events).toEqual([]);
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+        // The waved scan still drops the target (state 0).
+        expect(npc.components.get(AIStateComponent)!.scanTarget)
+            .toBeUndefined();
+    });
+
+    it("thrust started on the hail tick does not wave the scan", () => {
+        const [hailSeed] = hailSeeds();
+        const world = makeScanWorld();
+        const { npc, player, hails } = makeScanApproach(world);
+        player.components.get(MovementStateComponent)!.accelerating = 1;
+        player.components.set(PlayerThrustComponent, { onset: TIME.time });
+        seedRng(hailSeed);
+        world.step();
+        expect(hails.events).toEqual(
+            [{ from: npc.uuid, target: player.uuid }]);
+    });
+
+    it("a caught smuggler is fined and attacked", () => {
+        const [hailSeed] = hailSeeds();
+        const world = makeScanWorld(makeSmugglerState());
+        const { npc, player, hails } = makeScanApproach(world);
+        seedRng(hailSeed);
+        world.step();
+
+        expect(hails.events).toEqual(
+            [{ from: npc.uuid, target: player.uuid }]);
+        // FUN_00401800's catch tail: attack the player (target 0, state 4).
+        expect(npc.components.get(TargetComponent)!.target)
+            .toEqual(player.uuid);
+        // Flat 500 fine, no record change (the binary never records a
+        // mission-cargo catch).
+        expect(world.resources.get(PlayerStateResource)!.credits)
+            .toEqual(24500);
+        expect(world.resources.get(PlayerStateResource)!.legalRecord)
+            .toEqual({});
+        expect(world.resources.get(PlayerStateResource)!.failedMissions)
+            .toEqual([]);
+    });
+
+    it("a caught 0x0020 mission quick-fails without a fine (still attacked)",
+        () => {
+            const [hailSeed] = hailSeeds();
+            const world = makeScanWorld(makeSmugglerState(), 0x0020);
+            const { npc, player, hails } = makeScanApproach(world);
+            seedRng(hailSeed);
+            world.step();
+
+            expect(hails.events).toEqual(
+                [{ from: npc.uuid, target: player.uuid }]);
+            expect(npc.components.get(TargetComponent)!.target)
+                .toEqual(player.uuid);
+            const state = world.resources.get(PlayerStateResource)!;
+            expect(state.credits).toEqual(25000); // no fine on the quick-fail
+            expect(state.failedMissions).toEqual(["nova:507"]);
+            expect(state.activeMissions).toEqual([]);
+        });
 
     it("a gone scan target just drops (no pursuit memory)", () => {
         const world = makeWorld();

@@ -1,13 +1,15 @@
-// Planetary scan enforcement on system entry (P3): when the player warps
-// in, the system's government (first inhabited planet's, per smuggling.ts)
-// may scan the hold. Thin ECS glue over the pure rules in
-// player/smuggling.ts — it applies the outcome the FSM-free module computes:
-// the fine, the SmugPenalty record hit (mission cargo only), and the flag
-// 0x0020 mission failures, then logs and saves.
+// In-flight smuggling enforcement (FUN_00401800): the trigger and gates
+// live in npc_ai_plugin.ts's InterceptorScanSystem (the AI-4 hail at the
+// 100px square), which emits NpcHailEvent once the hail fires. The
+// ScanSystem below consumes that event and applies the outcome the pure
+// rules in player/smuggling.ts compute: the flag 0x0020 mission
+// quick-fail (no fine) or the fine (no record change either way), then
+// the log and the pilot save; on a catch it makes the hailing ship ATTACK
+// the player (FUN_00401800's tail: target 0, state 4).
 //
-// Runs after MissionJumpStateSystem so a scan-caught failure lands on the
-// post-jump state (date already advanced, missions re-rolled) — the same
-// state the player then sees.
+// (This module must stay out of npc_ai_plugin's import graph: message_log
+// pulls in pers_plugin, which needs npc_ai_plugin's AggroRangeSystem at
+// load.)
 
 import { GetWorld } from "nova_ecs/arg_types";
 import { Plugin } from "nova_ecs/plugin";
@@ -19,69 +21,85 @@ import {
     reportFailureEvent,
 } from "../missions/mission_state_machine";
 import { MissionEnvResource, queuePlayerStateSave } from "../missions/mission_plugin";
-import { changeRecord } from "../player/legal_status";
 import { PlayerStateResource } from "../player/player_state_component";
-import { scanCheck, smuggledMissions, systemGovernment } from "../player/smuggling";
-import { FinishJumpEvent, MissionJumpStateSystem } from "./jump_plugin";
+import { scanCheck, smuggledMissions } from "../player/smuggling";
+import { NpcHailEvent } from "./npc_ai_plugin";
+import { Optional } from "nova_ecs/optional";
+import { GovernmentComponent } from "./npc_plugin";
+import { TargetComponent } from "./target_component";
+
+// Runs one FUN_00401800 hold scan by `govt` (the hailing ship's assigned
+// government) over the pilot's hold, and applies the catch: the first
+// caught mission carrying flag 0x0020 ("fails if scanned") quick-fails
+// through the FSM with NO fine (binary FUN_00440bf0); any other catch is
+// fined with NO record change (the binary never records a mission-cargo
+// catch). Logs the outcome and queues the pilot save. Returns true when
+// something was caught.
+export function smugglingScan(world: World, govtId: string): boolean {
+    const state = world.resources.get(PlayerStateResource);
+    const env = world.resources.get(MissionEnvResource);
+    const govt = env?.government(govtId) ?? null;
+    if (!state || !env || !govt) {
+        return false;
+    }
+
+    const result = scanCheck(env, govt, state.cargo, state.activeMissions,
+        state.credits);
+    if (!result.illegal) {
+        return false;
+    }
+
+    // The first caught mission decides the branch (one catch per scan):
+    // flag 0x0020 and not already failed -> quick-fail, else the fine.
+    const caught = smuggledMissions(env, govt, state.activeMissions);
+    const first = caught[0];
+    const effects: MissionEffect[] = [];
+    if (first && (first.mission.flags & 0x0020) !== 0
+        && !first.active.failed) {
+        effects.push(...reportFailureEvent(state, first.mission, first.active,
+            env, "scanned"));
+    }
+    else if (result.fine > 0) {
+        state.credits = Math.max(0, state.credits - result.fine);
+    }
+
+    const lines = [result.fine > 0
+        ? `The ${govt.name} authorities fined you ${result.fine} credits for smuggling.`
+        : `The ${govt.name} authorities scanned your hold and found illegal cargo.`];
+    for (const effect of effects) {
+        console.info('[smuggling]', JSON.stringify(effect));
+        if (effect.kind === 'text') {
+            lines.push(effect.text);
+        }
+    }
+    for (const line of lines) {
+        console.info('[smuggling]', line);
+        world.resources.get(MessageLogResource)?.addMessage(line);
+    }
+    queuePlayerStateSave();
+    return true;
+}
 
 const ScanSystem = new System({
     name: 'ScanSystem',
-    events: [FinishJumpEvent],
-    after: [MissionJumpStateSystem],
-    args: [FinishJumpEvent, GetWorld] as const,
-    step({ to }, world: World) {
-        const state = world.resources.get(PlayerStateResource);
-        if (!state) {
+    events: [NpcHailEvent],
+    // The hail names its hailing ship as the event's entity, so the
+    // components resolve off the interceptor.
+    args: [NpcHailEvent, GetWorld, Optional(TargetComponent),
+        Optional(GovernmentComponent)] as const,
+    step({ target }, world: World, shipTarget, govt) {
+        if (target === undefined || shipTarget === undefined
+            || govt === undefined || govt.id === null) {
+            // Not a smuggling hail, or the ship has no assigned government
+            // (the binary's govt == -1 gate).
             return;
         }
-        const env = world.resources.get(MissionEnvResource);
-        if (!env) {
-            return;
+        if (smugglingScan(world, govt.id)) {
+            // FUN_00401800's catch tail: attack the player (target 0,
+            // state 4). AggroRange keeps a live target, so this sticks.
+            shipTarget.target = target;
         }
-
-        const result = scanCheck(state, env, to, state.cargo, state.activeMissions);
-        if (!result.illegal) {
-            return;
-        }
-        const govtId = systemGovernment(env, to);
-        const govt = govtId === null ? null : env.government(govtId);
-        if (!govt) {
-            return;
-        }
-
-        if (result.fine > 0) {
-            state.credits = Math.max(0, state.credits - result.fine);
-        }
-        // The SmugPenalty record hit is tied to mission-defined cargo
-        // (Bible 1387); a jünk-only catch is fined but not recorded.
-        if (result.reason === 'mission' && govt.penalties.smuggling !== 0) {
-            changeRecord(state, govt.id, -govt.penalties.smuggling, env);
-        }
-        // Flag 0x0020 missions fail on being scanned carrying their cargo
-        // (Bible 1577); reportFailureEvent runs onFailure and the -CompReward
-        // record hit through the FSM. smuggledMissions returns a fresh array,
-        // so failMission's removals under us are safe.
-        const effects: MissionEffect[] = [];
-        for (const { mission, active }
-            of smuggledMissions(env, govt, state.activeMissions)) {
-            effects.push(...reportFailureEvent(state, mission, active, env, "scanned"));
-        }
-
-        const lines = [result.fine > 0
-            ? `The ${govt.name} authorities fined you ${result.fine} credits for smuggling.`
-            : `The ${govt.name} authorities scanned your hold and found illegal cargo.`];
-        for (const effect of effects) {
-            console.info('[smuggling]', JSON.stringify(effect));
-            if (effect.kind === 'text') {
-                lines.push(effect.text);
-            }
-        }
-        for (const line of lines) {
-            console.info('[smuggling]', line);
-            world.resources.get(MessageLogResource)?.addMessage(line);
-        }
-        queuePlayerStateSave();
-    }
+    },
 });
 
 export const ScanPlugin: Plugin = {

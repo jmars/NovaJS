@@ -1,38 +1,40 @@
-// Planetary scan / smuggling enforcement (EV Nova Bible 986-995, 1387-90,
-// 1577): on entering a system, its government may scan the hold. Pure
-// TypeScript — no PIXI/ECS — so the scan rules stay headless testable; the
-// caller (nova_plugin/scan_plugin.ts, on FinishJumpEvent) resolves the
-// system's government, applies the fine/record/mission failures and logs.
+// In-flight customs scan rules (binary FUN_00401800): an AI 3/4 police
+// ship completing its hail approach (state 7, the 100px square) scans the
+// player's hold. Pure TypeScript — no PIXI/ECS — so the scan rules stay
+// headless testable; the caller (nova_plugin/scan_plugin.ts's
+// smugglingScan, wired into npc_ai_plugin.ts's InterceptorScanSystem hail)
+// resolves the scanning ship's government, applies the outcome and logs.
 //
-// Fine semantics (gövt ScanFine): >= 1 is a flat fine, 0 is a warning-only
-// scan (stock data: all 68 govts carry 0, so enforcement is visible through
-// the SmugPenalty record hit and 0x0020 mission failures), and < 0 is a
-// percentage of the pilot's cash. The scan itself only happens when the
-// pilot's record with the scanning govt is not already below -CrimeTol.
+// Gates are the caller's business (FUN_00401800's own): AI 3/4, assigned
+// government != -1, that government's SmugPenalty != 0 (a gate only — the
+// scan never applies it to the record), the 100px square, visibility,
+// rand(100) ≤ 75 and FUN_00408150's movement grace.
 //
-// Illegal cargo (Bible 1387): jünk whose ScanMask overlaps the govt's
-// ScanMask, and mïsn cargo whose ScanMask overlaps it. Being caught with
-// mission cargo applies the govt's SmugPenalty to the record (the Bible ties
-// the penalty to mission-defined cargo); jünk-only catches are fined but not
-// recorded. Missions with flag 0x0020 ("mission fails if scanned with
-// illegal cargo") fail via the FSM's reportFailureEvent.
+// Fine semantics (gövt ScanFine, runtime +0x54 / file +0x06): >= 1 is a
+// flat fine, 0 is a warning-only scan (stock data: all 68 govts carry 0),
+// and < 0 is a percentage of the pilot's cash, rounded to whole hundreds
+// with a 1-credit floor. There is NO record gate: the binary's scan never
+// reads CrimeTol.
+//
+// Illegal cargo (FUN_00401800's detection loop): the first active, loaded
+// mission whose mïsn ScanMask overlaps the govt's ScanMask decides the
+// branch — flag 0x0020 quick-fails that mission (no fine), anything else
+// is fined. Jünk whose ScanMask overlaps is also caught. Neither catch
+// changes the legal record (the binary records only jünk/wëap catches,
+// which the port does not model).
 
 import { GovernmentData } from "novadatainterface/GovernmentData";
 import { JunkData } from "novadatainterface/JunkData";
 import { MissionData } from "novadatainterface/MissionData";
-import { PlanetData } from "novadatainterface/PlanetData";
-import { SystemData } from "novadatainterface/SystemData";
 import { rawIdOf } from "../missions/stellar_filter";
 import { cargoIllegalMask, CargoEntry, isStandardCommodity } from "./cargo";
-import { ActiveMission, PlayerState } from "./player_state";
+import { ActiveMission } from "./player_state";
 
 
 // The lookups the scan rules need. MissionEnv satisfies this structurally
 // (see legal_status.LegalEnv for the same pattern); tests build one from
 // synthetic fixtures.
 export interface SmugglingEnv {
-    system(systemId: string): SystemData | null;
-    planet(planetId: string): PlanetData | null;
     government(govtId: string | null): GovernmentData | null;
     missionByRawId(rawId: number): MissionData | null;
     // Jünk data (cargo.ts hold identities, scan masks). Optional so test
@@ -40,10 +42,10 @@ export interface SmugglingEnv {
     junk?(rawId: number): JunkData | undefined;
 }
 
-// One planetary scan outcome. `fine` is never negative; 0 with
-// `illegal: true` is a warning-only scan (gövt ScanFine 0). `reason` says
-// what was caught: mission-cargo smuggling outranks a jünk-only catch
-// (it alone triggers the record hit).
+// One scan outcome. `fine` is never negative; 0 with `illegal: true` is a
+// warning-only scan (gövt ScanFine 0). `reason` says what was caught:
+// a mission-cargo catch outranks a jünk-only one (it alone can carry the
+// 0x0020 quick-fail branch).
 export interface ScanResult {
     illegal: boolean;
     fine: number;
@@ -52,27 +54,10 @@ export interface ScanResult {
 
 const NO_SCAN: ScanResult = { illegal: false, fine: 0, reason: "none" };
 
-// The government that would scan in `systemId`. SystemData carries no govt
-// field, so this is the first inhabited planet's govt; null (no system, no
-// inhabited planet, or an independent planet) means nobody scans here —
-// fail-open, the safe reading of the Bible's "independent = gövt 128" hint.
-export function systemGovernment(env: SmugglingEnv, systemId: string): string | null {
-    const system = env.system(systemId);
-    if (!system) {
-        return null;
-    }
-    for (const planetId of system.planets) {
-        const planet = env.planet(planetId);
-        if (planet?.inhabited) {
-            return planet.govt;
-        }
-    }
-    return null;
-}
-
 // Active missions currently carrying cargo whose mïsn ScanMask overlaps the
-// govt's — the Bible's definition of smuggled mission cargo (1387). Cargo
-// not yet loaded (pickup pending) is not in the hold, so it never scans.
+// govt's — the binary's detection loop (DAT_005914b4 +0x1a masks, cargo
+// loaded +0x33, cargo type +0x12). Cargo not yet loaded (pickup pending) is
+// not in the hold, so it never scans.
 export function smuggledMissions(env: SmugglingEnv, govt: GovernmentData,
     activeMissions: readonly ActiveMission[]):
     Array<{ mission: MissionData, active: ActiveMission }> {
@@ -93,36 +78,26 @@ export function smuggledMissions(env: SmugglingEnv, govt: GovernmentData,
 }
 
 // The fine for a caught smuggler, from the govt's ScanFine (see header).
-// Never negative: a percentage fine over a negative balance floors to 0.
+// Never negative; the FUN_00401800 percentage band rounds half-away to
+// whole hundreds with a 1-credit floor.
 export function scanFine(govt: GovernmentData, credits: number): number {
     if (govt.scanFine > 0) {
         return govt.scanFine;
     }
     if (govt.scanFine < 0) {
-        return Math.max(0, Math.floor(credits * (-govt.scanFine) / 100));
+        return Math.max(1, Math.round(credits * (-govt.scanFine) * 0.0001)
+            * 100);
     }
     return 0;
 }
 
-/**
- * Runs one planetary scan over the pilot's hold and active missions in
- * `systemId`. Returns NO_SCAN when nobody scans here (no resolvable
- * government) or when the record gate exempts the pilot
- * (legalRecord < -CrimeTol — govts do not bother scanning pilots they
- * already consider criminals, Bible 986-995).
- */
-export function scanCheck(state: PlayerState, env: SmugglingEnv, systemId: string,
-    cargo: readonly CargoEntry[], activeMissions: readonly ActiveMission[]):
-    ScanResult {
-    const govtId = systemGovernment(env, systemId);
-    const govt = govtId === null ? null : env.government(govtId);
-    if (!govt) {
-        return NO_SCAN;
-    }
-    if ((state.legalRecord[govt.id] ?? 0) < -govt.crimeTol) {
-        return NO_SCAN;
-    }
-
+// Runs one FUN_00401800 hold scan against `govt` (the scanning ship's
+// assigned government). Returns NO_SCAN when the hold is clean. The
+// quick-fail vs fine branch is the caller's (it needs the caught mission
+// itself); `reason` reports which catch fired.
+export function scanCheck(env: SmugglingEnv, govt: GovernmentData,
+    cargo: readonly CargoEntry[], activeMissions: readonly ActiveMission[],
+    credits: number): ScanResult {
     const junkMask = cargoIllegalMask(cargo, junkScanMasks(env, cargo));
     const junkIllegal = (junkMask & govt.scanMask) !== 0;
     const missions = smuggledMissions(env, govt, activeMissions);
@@ -131,7 +106,7 @@ export function scanCheck(state: PlayerState, env: SmugglingEnv, systemId: strin
     }
     return {
         illegal: true,
-        fine: scanFine(govt, state.credits),
+        fine: scanFine(govt, credits),
         reason: missions.length > 0 ? "mission" : "junk",
     };
 }
