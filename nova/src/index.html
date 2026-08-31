@@ -2,6 +2,11 @@
 <html>
 <head>
   <title>Nova</title>
+  <!-- GitHub Pages serves index.html with max-age=600; without this the
+       entry page can pin an old bundle/game-data version for up to 10 min
+       after a deploy (the ?v= query busts those only once the new HTML is
+       fetched). Ask browsers to revalidate this page every load. -->
+  <meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
   <style type="text/css">
 	html {
 		overflow:hidden;
