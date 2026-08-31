@@ -85,10 +85,8 @@ export interface MissionShipSpawnPlan {
 }
 
 export function systemMatchContext(state: PlayerState, active: ActiveMission,
-    systemId: string, env: MissionEnv): SystemMatchContext {
+    env: MissionEnv): SystemMatchContext {
     return {
-        originSystemId: env.systemOfPlanet(active.originStellar)
-            ?? state.currentSystem,
         // The player's system, not the system under test: they coincide in
         // every real call (ships spawn in the player's world), but keeping
         // them distinct keeps the filter honest for other callers.
@@ -113,7 +111,7 @@ export function missionShipsMatchSystem(state: PlayerState,
     }
     const code = which === "ship" ? mission.shipSyst : mission.auxShipSyst;
     return systemMatchesSystemFilter(system, decodeSystemFilter(code),
-        systemMatchContext(state, active, systemId, env));
+        systemMatchContext(state, active, env));
 }
 
 export function planMissionShipSpawn(state: PlayerState, mission: MissionData,

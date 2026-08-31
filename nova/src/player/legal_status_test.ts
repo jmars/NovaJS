@@ -5,7 +5,8 @@
 
 import "jasmine";
 import { RankData } from "novadatainterface/RankData";
-import { changeRecord, cleanRecord, deactivateRanksOnShipLoss } from "./legal_status";
+import { changeRecord, cleanRecord, deactivateRanksOnShipLoss, govtsAreClassmates,
+    govtsAreEnemies } from "./legal_status";
 import { PlayerState } from "./player_state";
 import {
     FED_CRIME_RANK,
@@ -83,6 +84,28 @@ describe("legal status", function() {
         expect(state.legalRecord["nova:128"]).toEqual(0);
         expect(state.legalRecord["nova:129"]).toEqual(-20);
     });
+
+    it("classmates are positional (FUN_0046bff0), not a set intersection",
+        function() {
+            // [1,2] vs [2,1] share no SLOT: not classmates, even though the
+            // class sets intersect. Slot 1 (2 == 2) does match.
+            const ab = makeGovt("nova:150", "Ab", [1, 2]);
+            const ba = makeGovt("nova:151", "Ba", [2, 1]);
+            const b9 = makeGovt("nova:152", "B9", [9, 2]);
+            expect(govtsAreClassmates(ab, ba)).toBeFalse();
+            expect(govtsAreClassmates(ab, b9)).toBeTrue();
+            // Enemies stay an any-vs-any list check: Ba's slot-0 class 2 is
+            // in ab's enemy list.
+            expect(govtsAreEnemies(ab, makeGovt("nova:153", "E", [], [], [2])))
+                .toBeTrue();
+            // A government is always classmates with itself, even with no
+            // class slots at all.
+            const empty = makeGovt("nova:154", "Empty", []);
+            expect(govtsAreClassmates(empty, makeGovt("nova:154", "Empty", [])))
+                .toBeTrue();
+            expect(govtsAreClassmates(empty, makeGovt("nova:155", "Other", [])))
+                .toBeFalse();
+        });
 
     it("strips 0x0040 ranks on any crime against the affiliated govt", function() {
         state.activeRanks.push(FED_CRIME_RANK.id);

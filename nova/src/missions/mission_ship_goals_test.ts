@@ -26,6 +26,7 @@ import {
 } from "./mission_state_machine";
 import {
     BOUNTY_MISSION,
+    EARTH,
     isBitSet,
     makeMission,
     makePlayerState,
@@ -107,31 +108,54 @@ describe("mission ship system matching", function() {
             .toBeFalse();
     });
 
-    it("decodes the govt-owned band", function() {
-        // 10000 = planets owned by govt 128 (Federation): Start One.
+    it("decodes the govt-owned band against the system's own govt", function() {
+        // 10002 = govt raw 130 (Polaris): the band keys on the SYSTEM's own
+        // government (FUN_00447a30, syst+8), not on its planets'. System
+        // 300 contains Federation Start One but is itself govtless, so the
+        // Federation band 10000 does not match it.
+        expect(matches(shipMission("nova:700", { shipSyst: 10002 }), "nova:304"))
+            .toBeTrue();
         expect(matches(shipMission("nova:700", { shipSyst: 10000 }), "nova:300"))
-            .toBeTrue();
-        // System 302 has Earth (govt 128) too.
+            .toBeFalse();
         expect(matches(shipMission("nova:700", { shipSyst: 10000 }), "nova:302"))
+            .toBeFalse();
+        // 9999 = govtless (system govt -1): every fixture system but 304.
+        expect(matches(shipMission("nova:700", { shipSyst: 9999 }), "nova:300"))
             .toBeTrue();
-        expect(matches(shipMission("nova:700", { shipSyst: 10000 }), "nova:301"))
+        expect(matches(shipMission("nova:700", { shipSyst: 9999 }), "nova:304"))
             .toBeFalse();
     });
 
-    it("decodes -6 as the player's system and -2 as any", function() {
-        // Ships only ever spawn in the player's world, so -6 matches exactly
+    it("decodes -1/-6 as the player's system and -2 as the travel system", function() {
+        // Ships only ever spawn in the player's world, so -1/-6 match exactly
         // when the tested system is the player's current system.
         expect(matches(shipMission("nova:700", { shipSyst: -6 }), "nova:300"))
             .toBeTrue();
         expect(matches(shipMission("nova:700", { shipSyst: -6 }), "nova:301"))
             .toBeFalse();
+        expect(matches(shipMission("nova:700", { shipSyst: -1 }), "nova:300"))
+            .toBeTrue();
         const elsewhere = { ...makePlayerState(), currentSystem: "nova:301" };
         expect(missionShipsMatchSystem(elsewhere,
             shipMission("nova:700", { shipSyst: -6 }),
             activeMission({ missionId: "nova:700" }), "nova:301", env, "ship"))
             .toBeTrue();
+        // -2 = the travel destination's system (Earth is in 302); without a
+        // resolved destination it matches nothing.
+        const traveling = activeMission({ missionId: "nova:700", travelStellar: EARTH.id });
+        expect(missionShipsMatchSystem(makePlayerState(),
+            shipMission("nova:700", { shipSyst: -2 }), traveling, "nova:302",
+            env, "ship")).toBeTrue();
+        expect(missionShipsMatchSystem(makePlayerState(),
+            shipMission("nova:700", { shipSyst: -2 }), traveling, "nova:300",
+            env, "ship")).toBeFalse();
         expect(matches(shipMission("nova:700", { shipSyst: -2 }), "nova:303"))
-            .toBeTrue();
+            .toBeFalse();
+        // -4/-5 fall through every band in the binary: no match, ever.
+        expect(matches(shipMission("nova:700", { shipSyst: -4 }), "nova:300"))
+            .toBeFalse();
+        expect(matches(shipMission("nova:700", { shipSyst: -5 }), "nova:300"))
+            .toBeFalse();
     });
 
     it("matches AuxShipSyst independently of ShipSyst", function() {

@@ -45,6 +45,7 @@ ts_library(
         "cron_scheduler_test.ts",
         "mission_ship_goals_test.ts",
         "mission_state_machine_test.ts",
+        "stellar_filter_test.ts",
         "test_fixtures.ts",
     ],
     deps = [

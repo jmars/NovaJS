@@ -271,7 +271,7 @@ function systemMapOf(env: MissionEnv): Map<string, SystemData> {
  *   -40001..-40099  the government takes N% of the player's cash
  *   <= -50000       price debited at accept (pass atAccept there only)
  * Note the record bands use the govt's RAW id, unlike the stellar govt
- * bands, which encode govt id - 127 (see stellar_filter.ts).
+ * bands, which encode govt id + 9872 etc. (see stellar_filter.ts).
  */
 export function applyPay(state: PlayerState, payVal: number, env: MissionEnv,
     effects: MissionEffect[], atAccept: boolean): void {
@@ -304,7 +304,7 @@ export function applyPay(state: PlayerState, payVal: number, env: MissionEnv,
     }
 
     // |pay| - 10000 (resp. -20000, -30000) is the government's RAW id,
-    // unlike the stellar govt bands, which encode govt id - 127 (see
+    // unlike the stellar govt bands, which encode raw id + 9872 etc. (see
     // stellar_filter.ts).
     const band = Math.floor(magnitude / 10000);
     const govtRawId = magnitude - band * 10000;

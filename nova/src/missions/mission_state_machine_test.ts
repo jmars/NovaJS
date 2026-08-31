@@ -20,7 +20,7 @@ import {
     resolveDestination,
 } from "./mission_state_machine";
 import { cronSeed, makeCronEnv, processCrons } from "./cron_scheduler";
-import { systemMatchesSystemFilter } from "./stellar_filter";
+import { decodeSystemFilter, systemMatchesSystemFilter } from "./stellar_filter";
 import {
     ActiveMission,
     PlayerState,
@@ -553,7 +553,6 @@ describe("mission state machine", function() {
     it("matches system filter codes for ship spawning", function() {
         const { env } = makeTestEnv();
         const baseCtx = {
-            originSystemId: "nova:300",
             playerSystemId: "nova:301",
             travelStellarId: VELLOS_WORLD.id,
             returnStellarId: EARTH.id,
@@ -575,20 +574,25 @@ describe("mission state machine", function() {
         const s2 = SYSTEMS.get("nova:302")!;
         const s3 = SYSTEMS.get("nova:303")!;
 
-        expect(systemMatchesSystemFilter(s0, { kind: "originSystem" }, baseCtx)).toBeTrue();
-        expect(systemMatchesSystemFilter(s1, { kind: "originSystem" }, baseCtx)).toBeFalse();
-        expect(systemMatchesSystemFilter(s0, { kind: "anyRandom" }, baseCtx)).toBeTrue();
-        // The travel stellar is in Sol (nova:302).
-        expect(systemMatchesSystemFilter(s2,
-            { kind: "travelStellarSystem" }, baseCtx)).toBeTrue();
-        expect(systemMatchesSystemFilter(s0,
-            { kind: "travelStellarSystem" }, baseCtx)).toBeFalse();
-        expect(systemMatchesSystemFilter(s2,
-            { kind: "returnStellarSystem" }, baseCtx)).toBeTrue();
-        // Adjacent to the origin (S0): S1 is linked, S3 is not.
-        expect(systemMatchesSystemFilter(s1, { kind: "adjacentToOrigin" }, baseCtx)).toBeTrue();
-        expect(systemMatchesSystemFilter(s3, { kind: "adjacentToOrigin" }, baseCtx)).toBeFalse();
-        expect(systemMatchesSystemFilter(s1, { kind: "playerSystem" }, baseCtx)).toBeTrue();
+        // Special codes (FUN_00447a30): -1 AND -6 are the player's CURRENT
+        // system; -2/-3 the travel/return destination's systems (Vell-os
+        // Prime and Earth both sit in Sol); -4/-5 match nothing.
+        expect(systemMatchesSystemFilter(s1, decodeSystemFilter(-1), baseCtx))
+            .toBeTrue();
+        expect(systemMatchesSystemFilter(s0, decodeSystemFilter(-1), baseCtx))
+            .toBeFalse();
+        expect(systemMatchesSystemFilter(s1, decodeSystemFilter(-6), baseCtx))
+            .toBeTrue();
+        expect(systemMatchesSystemFilter(s2, decodeSystemFilter(-2), baseCtx))
+            .toBeTrue();
+        expect(systemMatchesSystemFilter(s0, decodeSystemFilter(-2), baseCtx))
+            .toBeFalse();
+        expect(systemMatchesSystemFilter(s2, decodeSystemFilter(-3), baseCtx))
+            .toBeTrue();
+        expect(systemMatchesSystemFilter(s0, decodeSystemFilter(-4), baseCtx))
+            .toBeFalse();
+        expect(systemMatchesSystemFilter(s0, decodeSystemFilter(-5), baseCtx))
+            .toBeFalse();
         expect(systemMatchesSystemFilter(s0,
             { kind: "specific", rawId: 300 }, baseCtx)).toBeTrue();
         // In or adjacent to system 301: S1 itself and both neighbors.
@@ -598,12 +602,17 @@ describe("mission state machine", function() {
             { kind: "nearSystem", systemRawId: 301 }, baseCtx)).toBeTrue();
         expect(systemMatchesSystemFilter(s3,
             { kind: "nearSystem", systemRawId: 301 }, baseCtx)).toBeFalse();
-        // 10000 = systems containing a Federation planet: S0 (Start One) and
-        // S2 (Earth), not S1 (its planets are independent or the ally).
-        const fedBand = { kind: "govt" as const, relation: "owned" as const, govtRawId: 128 };
-        expect(systemMatchesSystemFilter(s0, fedBand, baseCtx)).toBeTrue();
-        expect(systemMatchesSystemFilter(s2, fedBand, baseCtx)).toBeTrue();
-        expect(systemMatchesSystemFilter(s1, fedBand, baseCtx)).toBeFalse();
+        // Govt bands key on the system's OWN govt (syst+8), not its
+        // planets': fixture systems 300-303 are govtless, only 304 has one.
+        const polarisOwned = { kind: "govt" as const, relation: "owned" as const,
+            govtRawId: 130 };
+        expect(systemMatchesSystemFilter(SYSTEMS.get("nova:304")!, polarisOwned,
+            baseCtx)).toBeTrue();
+        expect(systemMatchesSystemFilter(s0, polarisOwned, baseCtx)).toBeFalse();
+        expect(systemMatchesSystemFilter(s1, { kind: "govtless" }, baseCtx))
+            .toBeTrue();
+        expect(systemMatchesSystemFilter(SYSTEMS.get("nova:304")!,
+            { kind: "govtless" }, baseCtx)).toBeFalse();
     });
 
     // P7 acceptance: the whole scripted Vell-os opening, headless.

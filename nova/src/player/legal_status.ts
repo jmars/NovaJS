@@ -46,9 +46,21 @@ export function govtsAreEnemies(a: GovernmentData, b: GovernmentData): boolean {
     return classIntersection(a.classes, b.enemies);
 }
 
-// Classmates share at least one class number.
+// Classmates are POSITIONAL (FUN_0046bff0): some class slot i < 4 holds the
+// same number on both sides, or the governments are one and the same. NOT
+// an any-vs-any set intersection — [1,2] and [2,1] share no slot.
 export function govtsAreClassmates(a: GovernmentData, b: GovernmentData): boolean {
-    return classIntersection(a.classes, b.classes);
+    if (a.id === b.id) {
+        return true;
+    }
+    const slots = Math.min(4, a.classes.length, b.classes.length);
+    for (let i = 0; i < slots; i++) {
+        const c = a.classes[i];
+        if (c >= 0 && b.classes[i] === c) {
+            return true;
+        }
+    }
+    return false;
 }
 
 

@@ -75,21 +75,26 @@ describe("mission availability", function() {
         expect(checkAvailability(mission, ctxFor(state, env, START)).available).toBeFalse();
     });
 
-    it("rule 1: AvailStel 5000-band matches in or adjacent to the system", function() {
-        // 5173 = in/adjacent to system raw 301 (S1).
-        const mission = makeMission("nova:602", { availStel: 5173 });
-        // Landed on Barren Rock (in S1) and on Start One (S0 links S1): both
-        // match. Far Station's system is unlinked: no.
-        expect(checkAvailability(mission, ctxFor(state, env, BARREN, "nova:301")).available)
-            .toBeTrue();
-        expect(checkAvailability(mission, ctxFor(state, env, START, "nova:300")).available)
-            .toBeTrue();
-        expect(checkAvailability(mission,
-            ctxFor(state, env, FAR_STATION, "nova:303")).available).toBeFalse();
-    });
+    it("rule 1: AvailStel 5000-band matches systems ADJACENT to the target only",
+        function() {
+            // 5173 = adjacent to system raw 301 (S1). FUN_00441b40 checks
+            // only the LINKS of the landed system, so landing in S1 itself
+            // does NOT match; S0 and S2 (which link to S1) do. Far Station's
+            // system is unlinked: no.
+            const mission = makeMission("nova:602", { availStel: 5173 });
+            expect(checkAvailability(mission, ctxFor(state, env, BARREN, "nova:301"))
+                .available).toBeFalse();
+            expect(checkAvailability(mission, ctxFor(state, env, START, "nova:300"))
+                .available).toBeTrue();
+            expect(checkAvailability(mission, ctxFor(state, env, EARTH, "nova:302"))
+                .available).toBeTrue();
+            expect(checkAvailability(mission,
+                ctxFor(state, env, FAR_STATION, "nova:303")).available).toBeFalse();
+        });
 
     it("rule 1: AvailStel govt bands", function() {
-        // 10000 = Federation-owned planets.
+        // 10000 = Federation-owned planets (band base 10000 + raw id 128 -
+        // 128): the band codes are base + (raw id - 128).
         const owned = makeMission("nova:603", { availStel: 10000 });
         expect(checkAvailability(owned, ctxFor(state, env, EARTH, "nova:302")).available)
             .toBeTrue();
@@ -98,15 +103,17 @@ describe("mission availability", function() {
         expect(checkAvailability(owned, ctxFor(state, env, BARREN, "nova:301")).available)
             .toBeFalse(); // null govt is not the Federation
 
-        // 15001 = allies of the Federation (class 5 = the ally govt).
-        const allies = makeMission("nova:604", { availStel: 15001 });
+        // 15000 = allies of the Federation (Ally Govt lists class 5, the
+        // Federation's ally class).
+        const allies = makeMission("nova:604", { availStel: 15000 });
         expect(checkAvailability(allies, ctxFor(state, env, ALLY_STATION, "nova:301")).available)
             .toBeTrue();
         expect(checkAvailability(allies, ctxFor(state, env, EARTH, "nova:302")).available)
             .toBeFalse();
 
-        // 20001 = anyone but the Federation.
-        const others = makeMission("nova:605", { availStel: 20001 });
+        // 20000 = anyone but the Federation, govtless included (a govt of -1
+        // is not the Federation).
+        const others = makeMission("nova:605", { availStel: 20000 });
         expect(checkAvailability(others, ctxFor(state, env, EARTH, "nova:302")).available)
             .toBeFalse();
         expect(checkAvailability(others, ctxFor(state, env, VELLOS_WORLD, "nova:302")).available)
@@ -114,15 +121,15 @@ describe("mission availability", function() {
         expect(checkAvailability(others, ctxFor(state, env, BARREN, "nova:301")).available)
             .toBeTrue(); // independent counts as "not Federation"
 
-        // 25001 = enemies of the Federation (Polaris, class 16).
-        const enemies = makeMission("nova:606", { availStel: 25001 });
+        // 25000 = at war with the Federation (Polaris, class 16).
+        const enemies = makeMission("nova:606", { availStel: 25000 });
         expect(checkAvailability(enemies, ctxFor(state, env, FAR_STATION, "nova:303")).available)
             .toBeTrue();
         expect(checkAvailability(enemies, ctxFor(state, env, EARTH, "nova:302")).available)
             .toBeFalse();
 
-        // 30001 = the Federation or its classmates (Vell-os shares class 1).
-        const classmates = makeMission("nova:607", { availStel: 30001 });
+        // 30000 = the Federation or its classmates (Vell-os shares class 1).
+        const classmates = makeMission("nova:607", { availStel: 30000 });
         expect(checkAvailability(classmates, ctxFor(state, env, EARTH, "nova:302")).available)
             .toBeTrue();
         expect(checkAvailability(classmates, ctxFor(state, env, VELLOS_WORLD, "nova:302"))
@@ -130,14 +137,27 @@ describe("mission availability", function() {
         expect(checkAvailability(classmates,
             ctxFor(state, env, ALLY_STATION, "nova:301")).available).toBeFalse();
 
-        // 31001 = neither the Federation nor its classmates.
-        const strangers = makeMission("nova:608", { availStel: 31001 });
+        // 31000 = neither the Federation nor its classmates. NOTE: the
+        // binary's AvailStel 31000 band is degenerate (bug at 0x441e26:
+        // every governed spob passes); the port keeps the intended
+        // "neither govt nor classmate" semantics, stricter than the binary.
+        const strangers = makeMission("nova:608", { availStel: 31000 });
         expect(checkAvailability(strangers, ctxFor(state, env, VELLOS_WORLD, "nova:302"))
             .available).toBeFalse();
         expect(checkAvailability(strangers, ctxFor(state, env, ALLY_STATION, "nova:301"))
             .available).toBeTrue();
         expect(checkAvailability(strangers, ctxFor(state, env, FAR_STATION, "nova:303"))
             .available).toBeTrue();
+    });
+
+    it("rule 1: AvailStel 9999 matches govtless planets, inhabited or not", function() {
+        // 9999 asks for govt -1 exactly (FUN_00441b40: govt == code-10000);
+        // it carries no inhabited requirement, unlike AvailStel -1.
+        const govtless = makeMission("nova:609", { availStel: 9999 });
+        expect(checkAvailability(govtless, ctxFor(state, env, BARREN, "nova:301"))
+            .available).toBeTrue();
+        expect(checkAvailability(govtless, ctxFor(state, env, START, "nova:300"))
+            .available).toBeFalse();
     });
 
     it("rule 4: AvailRating boundaries against the combat rating (kill count)",

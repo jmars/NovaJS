@@ -84,6 +84,7 @@ audit) instead of after a user reports them.
 | Spaceport buttons | `spaceport/spaceport.ts` | FUN_004903c0 | APPROXIMATED | spöb outfitter 0x4, shipyard 0x8 gating added |
 | Mission briefing | `spaceport/briefing.ts` | — | UNKNOWN | — |
 | Mission BBS | `spaceport/mission_bbs.ts` | — | UNKNOWN | — |
+| Stellar filters (decode + match) | `missions/stellar_filter.ts` | FUN_00447a30 (system matcher), FUN_00441b40 (availability, AvailStel block), FUN_0043d510/FUN_0043e6f0 (destination pickers), FUN_0046bc90/bdf0/bff0 (relations) | VERIFIED w/ noted quirks | +127 shift PROVEN (binary debug prints govt as code−9872…=index+128; runtime govt ids are 0-based gövt table indices). Bases 9999/15000/20000/25000/30000/31000 all CONFIRMED; band widths 5000×4 then 1000×2 (not +2048); code 9999 = govtless. System matcher −1/−6 = player's CURRENT system, −2 = travel-dest system, −3 = return-dest system, −4/−5 never match. Near band 5000..9998; AvailStel near checks LINKS ONLY (not self). Binary bug @0x441e26: AvailStel 31000 band passes code−30000 to FUN_0046bff0 (bounds always fail) ⇒ degenerates to "any landed spöb with a govt" — port is stricter (intended semantics). Classmates (FUN_0046bff0) is POSITIONAL class-slot equality, not set intersection. APPLIED 2024 (handoff-stellar-fix): band widths/caps, govtless 9999, positional classmates, system bands keyed on the system's OWN govt, AvailStel near = links-only, −1/−6 = current system. Remaining gaps: planet-band allies/enemies still use the plain relation helpers (binary band code adds equality + PerBinary 0x800/reverse/xenophile terms); AvailStel specific band lacks the FUN_0046b920 chain-resolve; AvailStel −1 requires inhabited (binary passes unconditionally); binary's degenerate 31000 AvailStel band deliberately not replicated |
 
 ## Audit backlog (prioritized)
 
@@ -103,8 +104,15 @@ when audited.
    ported. Requires dûde + sÿst parsing (backlog item 1).
 3. ~~**Combat damage path** (projectile/beam/blast)~~ — AUDITED + FIXED (see combat table): beam decay, blast square range / player-only self-blast / projectile double-dip, shield −10% floor, and the FUN_0042f270 moving-toward angular gate (replacing the unverified prox-safety window) are ported; remaining approximations noted inline (friendly no-disable clamp, beam charge window, beam splash).
 4. ~~**AI targeting / retaliation radii**~~ — DONE (audit + port): no radius table exists in the binary; acquisition is FUN_0040e020 (odds filter on FUN_00411800 group strength + aggress×600 player square + legal record), flee thresholds are aggress-driven (0.3/0.15), retaliation is govt-difference-gated. Combat-table AI rows (47-51) are PORTED with the remaining approximations noted inline.
-5. **Mission availability / stellar filters** — govt-band +127 shift verified
-   against stock mïsn, but edge cases (30000/31000 bands) are inferred.
+5. ~~**Mission availability / stellar filters**~~ — AUDITED + FIXED (see UI
+   table row "Stellar filters"). All six govt-band bases + the encoding
+   (govt raw id = code − base + 128; bases 10000/15000/20000/25000/30000/31000,
+   9999 = govtless) are byte-proven and now ported, with the system-matcher
+   −1..−6 semantics, govt-band keying on the system's own govt, positional
+   classmates, near-band 9998 cap + links-only AvailStel matching. Remaining
+   (low-impact, documented in the table row): planet-band PerBinary relation
+   terms, the FUN_0046b920 chain-resolve on AvailStel specific codes, and
+   AvailStel −1's unconditional pass.
 6. **Scanning / smuggling** — crimeTol gate shared with player hostility; not
    independently audited.
 7. **Combat rating / ranks interplay** — deactivateRanksOnShipLoss only wires the

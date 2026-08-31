@@ -68,14 +68,17 @@ export const PersComponent = new Component<{
 const PlayerQuery = new Query([UUID, PlayerShipSelector] as const);
 
 // LinkSyst -1 matches any system; otherwise it uses the mïsn system filter
-// codes (specific ids, the near bands and the govt relation bands).
+// codes (specific ids, the near bands and the govt relation bands) through
+// the shared decoder. The binary's përs/flët matchers are unaudited inline
+// copies of FUN_00447a30; stock data only ever uses -1/specific/owned
+// codes, and the mission-relative specials (-2/-3) have nothing to resolve
+// against here, so they match nothing.
 export function persActive(pers: PersData, state: PlayerState, systemId: string,
     systemData: SystemData, env: MissionEnv): boolean {
     if (pers.linkSyst !== -1) {
-        const originSystemId = (state.lastStellar !== null
-            ? env.systemOfPlanet(state.lastStellar) : null) ?? systemId;
         const ctx: SystemMatchContext = {
-            originSystemId,
+            // Ambient spawns happen in the player's system, which is also
+            // what -1/-6 resolve to.
             playerSystemId: systemId,
             travelStellarId: null,
             returnStellarId: null,
