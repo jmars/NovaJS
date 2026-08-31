@@ -175,6 +175,10 @@ export class ItemGrid<I extends Item> {
         });
     }
 
+    get count() {
+        return this.tiles.length;
+    }
+
     get selection() {
         return this.items[this.selectionIndex];
     }

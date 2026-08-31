@@ -18,6 +18,12 @@ export interface PlanetData extends SpaceObjectData {
     flags2: number;
     hasBar: boolean;       // spöb flag 0x00000040
     tech: number;          // tech level, controls outfit/ship availability
+    // The spöb's special tech levels (raw 14/16/18): an outfit or ship whose
+    // raw tech EQUALS one of these is sold here even when it exceeds `tech`.
+    // (The binary keeps eight runtime slots; the resource format only
+    // carries three — the rest load as zero and can never match a real
+    // tech gate on stock data.)
+    specialTech: number[];
     hasTradeCenter: boolean; // spöb flag 0x00000002 (commodity exchange)
     hasOutfitter: boolean; // spöb flag 0x00000004
     hasShipyard: boolean;  // spöb flag 0x00000008
@@ -41,6 +47,7 @@ export function getDefaultPlanetData(): PlanetData {
         flags2: 0,
         hasBar: false,
         tech: 0,
+        specialTech: [],
         hasTradeCenter: false,
         hasOutfitter: false,
         hasShipyard: false,

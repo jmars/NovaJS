@@ -19,6 +19,35 @@ class OutfResource extends BaseResource {
     get max(): number {
         return this.data.getInt16(10);
     }
+    // Raw oütf flags (u16 @ 12). The outfitter filter keys off 0x100 (govt
+    // mask check), 0x1000 (hide same-displayWeight duplicates) and 0x4000
+    // (AvailBits check); 0x8 = not sellable, 0x400 = bulk-buy qty dialog.
+    get flags(): number {
+        return this.data.getUint16(12);
+    }
+    // AvailBits Stochastic expression (null-terminated @ 46): only evaluated
+    // when flags 0x4000 is set (FUN_0046a220).
+    get availBits(): string {
+        var s = "";
+        for (var i = 46; i < 46 + 64 && i < this.data.byteLength; i += 1) {
+            var byte = this.data.getUint8(i);
+            if (byte === 0) {
+                break;
+            }
+            s += String.fromCharCode(byte);
+        }
+        return s;
+    }
+    // Govt masks required when flags 0x100 is set (FUN_0046cd80 reads raw
+    // 38/42 as the two u32 words).
+    get require(): [number, number] {
+        return [this.data.getUint32(38), this.data.getUint32(42)];
+    }
+    // Stock percent (s16 @ 1008, clamped 0..100 at load): the chance per day
+    // that the outfit is in stock (100 = always, 0 = never sold).
+    get stockPercent(): number {
+        return Math.max(0, Math.min(100, this.data.getInt16(1008)));
+    }
     get pictID(): number {
         return this.id - 128 + 6000;
     }
@@ -28,8 +57,10 @@ class OutfResource extends BaseResource {
     get cost(): number {
         return this.data.getInt32(14);
     }
+    // 64-bit Contribute while owned (raw 30/34). These masks also join the
+    // player's pool while the outfit is owned (FUN_0046cca0).
     get contribute(): [number, number] {
-        return [this.data.getInt32(32), this.data.getInt32(36)];
+        return [this.data.getInt32(30), this.data.getInt32(34)];
     }
     get functions(): OutfitFunctions {
         var functions: OutfitFunctions = [];

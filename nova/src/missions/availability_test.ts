@@ -203,7 +203,7 @@ describe("mission availability", function() {
                 "bbs", { rankContributes: [1 << 4, 0] })).available).toBeFalse();
         });
 
-    it("rule 2: AvailLoc must equal the offer location", function() {
+    it("rule 2: AvailLoc — BBS lists 0; the bar pops AvailLoc 1 from the shared not-BBS queue", function() {
         const bbs = baseMission("nova:610");
         const bar = makeMission("nova:611", { availLoc: 1 });
         const spaceport = makeMission("nova:612", { availLoc: 3 });
@@ -212,6 +212,8 @@ describe("mission availability", function() {
 
         expect(checkAvailability(bbs, ctxFor(state, env, START, "nova:300", "bbs")).available)
             .toBeTrue();
+        // AvailLoc 0 is exactly what the bar queue rejects (FUN_0043cf00
+        // pass 1 keeps everything but 0).
         expect(checkAvailability(bbs, ctxFor(state, env, START, "nova:300", "bar")).available)
             .toBeFalse();
 
@@ -223,9 +225,13 @@ describe("mission availability", function() {
 
         expect(checkAvailability(spaceport,
             ctxFor(state, env, START, "nova:300", "spaceport")).available).toBeTrue();
+        // The bar queue carries every non-BBS location (1,3,4,5,6); the bar
+        // UI re-filters to AvailLoc 1 when it pops (FUN_00448670(1)).
+        expect(checkAvailability(spaceport,
+            ctxFor(state, env, START, "nova:300", "bar")).available).toBeTrue();
 
         // Ship-location (pers) offers exist since the përs comm dialog (P4);
-        // trade/shipyard/outfit dialogs still don't and are never offered.
+        // trade/shipyard/outfit pops still don't and are never offered.
         expect(checkAvailability(shipPers,
             ctxFor(state, env, START, "nova:300", "ship")).available).toBeTrue();
         expect(checkAvailability(shipPers,
@@ -245,6 +251,10 @@ describe("mission availability", function() {
 
         state.legalRecord["nova:128"] = -5;
         expect(checkAvailability(atMost, ctxFor(state, env, START)).available).toBeTrue();
+        // Negative ceiling: pass iff record <= availRecord — -4 is over the
+        // -5 ceiling (FUN_00441b40), not -|availRecord| = 5.
+        state.legalRecord["nova:128"] = -4;
+        expect(checkAvailability(atMost, ctxFor(state, env, START)).available).toBeFalse();
         // Record 7 is over the -5 ceiling (|availRecord| = 5).
         state.legalRecord["nova:128"] = 7;
         expect(checkAvailability(atMost, ctxFor(state, env, START)).available).toBeFalse();
@@ -307,8 +317,9 @@ describe("mission availability", function() {
             .toBeFalse();
         expect(checkAvailability(mustNot, ctxFor(state, env, START)).available).toBeTrue();
 
-        // 0/-1/127 pass for any ship; the govt-variant band falls back to an
-        // exact match until shïp variants are modeled.
+        // 0/-1/127 pass for any ship; the 2128-2384/3128-3400 bands are the
+        // escort-slot conditions (shïp escort-slot fields, unmodeled) and
+        // pass for now.
         const anyShip = makeMission("nova:662", { availShipType: 127 });
         expect(checkAvailability(anyShip, ctxFor(state, env, START)).available).toBeTrue();
         const govtVariant = makeMission("nova:663", { availShipType: 2130 });
@@ -350,15 +361,18 @@ describe("mission availability", function() {
         expect(checkAvailability(noCargo, ctxFor(state, env, START)).available).toBeTrue();
     });
 
-    it("rule 10: no re-offers while active or done, and 16 active max", function() {
+    it("rule 10: only already-active blocks re-offers (the binary has no completed/failed gate), 16 active max", function() {
         const mission = baseMission("nova:690");
         state.completedMissions.push(mission.id);
-        expect(checkAvailability(mission, ctxFor(state, env, START)).available).toBeFalse();
+        // Completed missions CAN be offered again (binary FUN_00441b40 only
+        // skips already-active slots).
+        expect(checkAvailability(mission, ctxFor(state, env, START)).available)
+            .toBeTrue();
 
         const other = baseMission("nova:691");
-        state.completedMissions.length = 0;
         state.failedMissions.push(other.id);
-        expect(checkAvailability(other, ctxFor(state, env, START)).available).toBeFalse();
+        expect(checkAvailability(other, ctxFor(state, env, START)).available)
+            .toBeTrue();
 
         for (let i = 0; i < 16; i++) {
             state.activeMissions.push({

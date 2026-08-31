@@ -25,6 +25,7 @@ import { briefingInput, acceptOffer, computeOffers, logEffects, MissionBBS, Miss
 import { MissionInfo, renderMissionInfo } from './mission_info';
 import { Menu } from './menu';
 import { MenuControls } from './menu_controls';
+import { MarketContext, dailyMarketRoll } from './market_filter';
 import { Outfitter } from './outfitter';
 import * as purchase from './purchase';
 import { Shipyard } from './shipyard';
@@ -37,7 +38,7 @@ import { JunkData } from 'novadatainterface/JunkData';
 import { TestContext } from 'novadatainterface/expressions';
 import { MissionEnv } from '../missions/mission_state_machine';
 import { queuePlayerStateSave } from '../missions/mission_plugin';
-import { priceMod, RankEnv } from '../player/ranks';
+import { activeRankContributes, priceMod, RankEnv } from '../player/ranks';
 import { PlayerState } from '../player/player_state';
 
 // The mission state the spaceport UI reads and writes. Optional so the
@@ -82,8 +83,9 @@ export class Spaceport extends Menu<Entity> {
 
     private showBar = async () => {
         this.controls.unbind();
-        const offers = await computeOffers('bar', await this.missionUi());
-        await this.bar!.showOffers(offers);
+        const ui = await this.missionUi();
+        const offers = await computeOffers('bar', ui);
+        await this.bar!.showOffers(offers, undefined, ui);
         this.controls.bind();
     };
 
@@ -106,6 +108,7 @@ export class Spaceport extends Menu<Entity> {
                 priceMod: this.getPriceMod(),
                 freeMass: await this.currentFreeMass(outfits),
             });
+            this.outfitter.setMarketContext(await this.marketContext(outfits));
         }
         const newOutfits = await this.outfitter.show(outfits);
         this.input.components.set(OutfitsStateComponent, newOutfits);
@@ -133,6 +136,8 @@ export class Spaceport extends Menu<Entity> {
                 },
                 priceMod: this.getPriceMod(),
             });
+            this.shipyard.setMarketContext(await this.marketContext(
+                this.input.components.get(OutfitsStateComponent) ?? new Map()));
         }
         const newInput = await this.shipyard.show(this.input);
         if (newInput !== this.input) {
@@ -397,16 +402,13 @@ export class Spaceport extends Menu<Entity> {
             spaceportPict.position.y = -256;
             this.container.addChild(spaceportPict);
         }
-        this.container.addChild(this.outfitter.container);
-        this.container.addChild(this.shipyard.container);
-        this.container.addChild(this.tradeCenter.container);
+        // Stock buttons keep their stock slots; a planet without the
+        // matching facility simply has no button there. The buttons are
+        // added BEFORE the sub-dialog containers: the binary's sub-screens
+        // are modal dialogs stacked above the (now inert) spaceport
+        // buttons, and PIXI renders later children on top — adding the
+        // dialogs first made buttons draw over open panels.
         if (this.missions) {
-            this.container.addChild(this.briefing!.container);
-            this.container.addChild(this.missionBBS!.container);
-            this.container.addChild(this.bar!.container);
-            this.container.addChild(this.missionInfo!.container);
-            // Stock buttons keep their stock slots; a planet without the
-            // matching facility simply has no button there.
             if (data.hasShipyard) {
                 // The shipyard button only exists on planets with a shipyard
                 // (spöb flag 0x00008).
@@ -460,6 +462,17 @@ export class Spaceport extends Menu<Entity> {
                 this.addButtons({ fleet: fleetButton });
             }
         }
+        // Sub-dialog containers go in AFTER the buttons so they render
+        // above them when open.
+        this.container.addChild(this.outfitter.container);
+        this.container.addChild(this.shipyard.container);
+        this.container.addChild(this.tradeCenter.container);
+        if (this.missions) {
+            this.container.addChild(this.briefing!.container);
+            this.container.addChild(this.missionBBS!.container);
+            this.container.addChild(this.bar!.container);
+            this.container.addChild(this.missionInfo!.container);
+        }
     }
 
     // The planet's price modifier (1 = unchanged): the PriceMod of the
@@ -475,6 +488,53 @@ export class Spaceport extends Menu<Entity> {
             : null;
         return priceMod(this.missions.playerState, rankEnv,
             this.data?.govt ?? null);
+    }
+
+    // The outfitter/shipyard market context (the FUN_0046a220 /
+    // FUN_00469e90 inputs): the planet's tech + special techs, the player's
+    // govt-mask pool (FUN_0046cca0: flagship | earned ranks | owned
+    // outfits), the control-bit context for AvailBits expressions, and the
+    // per-day stock rolls. `outfits` is what the player carries.
+    private async marketContext(outfits: purchase.Outfits): Promise<MarketContext> {
+        if (!this.missions || !this.data) {
+            throw new Error('Spaceport has no mission state');
+        }
+        const missions = this.missions;
+        const mask: [number, number] = [0, 0];
+        const shipId = this.input.components.get(ShipComponent)?.id;
+        if (shipId) {
+            try {
+                const ship = await this.gameData.data.Ship.get(shipId);
+                mask[0] |= ship.contribute[0];
+                mask[1] |= ship.contribute[1];
+            }
+            catch {
+                // Unknown ship type: it contributes nothing.
+            }
+        }
+        const rankEnv: RankEnv | null = missions.env.rank
+            ? { rank: id => missions.env.rank!(id) }
+            : null;
+        const rankMask = activeRankContributes(missions.playerState, rankEnv);
+        mask[0] |= rankMask[0];
+        mask[1] |= rankMask[1];
+        for (const id of outfits.keys()) {
+            try {
+                const outfit = await this.gameData.data.Outfit.get(id);
+                mask[0] |= outfit.contribute[0];
+                mask[1] |= outfit.contribute[1];
+            }
+            catch {
+                // Unknown outfit data: it contributes nothing.
+            }
+        }
+        return {
+            planetTech: this.data.tech,
+            planetSpecialTech: this.data.specialTech,
+            maskContributes: mask,
+            testCtx: this.testContext(missions),
+            rollFor: rawId => dailyMarketRoll(missions.playerState, rawId),
+        };
     }
 
     // The mass actually free on the ship for the outfitter: the ship data's

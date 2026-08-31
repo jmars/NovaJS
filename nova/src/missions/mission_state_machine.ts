@@ -166,6 +166,16 @@ export function rerollAvailRandomRolls(state: PlayerState, missionIds: string[],
     }
 }
 
+// Seed for the availRandomRolls re-roll at every LANDING: the binary
+// re-rolls the 1000 rolls on each landing transition too (FUN_00457580),
+// not just on jumps, so the board can change while hopping between planets
+// of one system. Mixed with the landed stellar's raw id so the landing
+// board differs from the warp-in roll of the same day.
+export function landingRerollSeed(state: PlayerState,
+    landedStellarId: string): number {
+    return (jumpRerollSeed(state) ^ (rawIdOf(landedStellarId) * 0x9E37)) >>> 0;
+}
+
 
 // --- stellar matching ---
 

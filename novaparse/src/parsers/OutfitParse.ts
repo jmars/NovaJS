@@ -121,8 +121,11 @@ export async function OutfitParse(outf: OutfResource, notFoundFunction: (m: stri
         desc = descResource.text;
     }
     else {
-        desc = "No matching dësc for oütf of id " + base.id;
-        notFoundFunction(desc);
+        // Resolution (dësc 3000 + raw id - 128) is correct; a missing dësc
+        // is a stock-data gap (e.g. oütf 338 → dësc 3210). Show no
+        // description rather than leaking a parser error into the UI.
+        desc = "";
+        notFoundFunction("No matching dësc for oütf of id " + base.id);
     }
 
     return {
@@ -133,6 +136,11 @@ export async function OutfitParse(outf: OutfResource, notFoundFunction: (m: stri
         price: outf.cost,
         desc,
         displayWeight: outf.displayWeight,
+        rawTech: outf.techLevel,
+        stockPercent: outf.stockPercent,
+        flags: outf.flags,
+        availBits: outf.availBits,
+        require: outf.require,
         max: outf.max,
         contribute: outf.contribute,
         marines

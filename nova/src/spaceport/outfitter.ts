@@ -1,12 +1,13 @@
 import { OutfitData } from "novadatainterface/OutiftData";
 import { DefaultMap } from "nova_ecs/utils";
 import * as PIXI from 'pixi.js';
-import { Observable } from "rxjs";
+import { Observable, Subscription } from "rxjs";
 import { GameData } from "../client/gamedata/GameData";
 import { ControlEvent } from "../nova_plugin/controls_plugin";
 import { OutfitsState } from "../nova_plugin/outfit_plugin";
 import { Button } from "./button";
 import { ItemGrid, ItemTile } from "./item_grid";
+import { MarketContext, orderOutfits, outfitListed } from "./market_filter";
 import { Menu } from "./menu";
 import * as purchase from "./purchase";
 
@@ -43,12 +44,16 @@ export const FONT = {
 
 export class Outfitter extends Menu<OutfitsState> {
     private itemGrid?: ItemGrid<OutfitData>;
+    private gridSubscription?: Subscription;
     private pictContainer = new PIXI.Container();
     private outfits: DefaultMap<string, number>;
     private purchases?: OutfitterPurchases;
     private freeMass = 0;
     private buyButton?: Button;
     private sellButton?: Button;
+    // The market context (planet tech, masks, control bits, daily rolls),
+    // set by the spaceport before each show(); drives the list filter.
+    private market?: MarketContext;
 
     private text = {
         description: new PIXI.Text("", FONT.normal),
@@ -132,15 +137,50 @@ export class Outfitter extends Menu<OutfitsState> {
         this.purchases = purchases;
     }
 
-    protected override async build() {
-        const itemGrid = await this.makeOutfitsGrid();
-        this.itemGrid = itemGrid;
-        this.container.addChild(this.itemGrid.container);
+    /** The market context (planet tech, masks, control bits, daily rolls)
+     * — set by the spaceport before each show(). */
+    setMarketContext(market: MarketContext) {
+        this.market = market;
+    }
 
-        this.itemGrid.drawGrid();
-        this.itemGrid.container.position.x = -373;
-        this.itemGrid.container.position.y = -153;
-        this.itemGrid.activeTile.subscribe(this.setOutfitSelected.bind(this));
+    protected override async build() {
+        // The grid itself is built per show(): the binary re-runs its list
+        // builder (FUN_0046a220) at every dialog open, and the filter reads
+        // the outfit state that arrives with show().
+    }
+
+    // Re-lists the outfitter per open (FUN_0046a220): tech gate + (when not
+    // owned) AvailBits/govt-mask/stock checks, then the displayWeight order.
+    private async rebuildGrid() {
+        const market = this.market;
+        const ids = (await this.gameData.ids).Outfit;
+        const outfits: OutfitData[] = [];
+        for (const id of ids) {
+            const outfit = await this.gameData.data.Outfit.get(id, 100);
+            const owned = (this.outfits.get(id) ?? 0) > 0;
+            if (market && !outfitListed(outfit, owned, market)) {
+                continue;
+            }
+            outfits.push(outfit);
+        }
+        const itemGrid = new ItemGrid(this.gameData, orderOutfits(outfits));
+        itemGrid.setCounts(this.outfits);
+        this.setItemGrid(itemGrid);
+    }
+
+    private setItemGrid(itemGrid: ItemGrid<OutfitData>) {
+        if (this.itemGrid) {
+            this.container.removeChild(this.itemGrid.container);
+            this.gridSubscription?.unsubscribe();
+        }
+        this.itemGrid = itemGrid;
+        this.gridSubscription = itemGrid.activeTile
+            .subscribe(this.setOutfitSelected.bind(this));
+
+        itemGrid.drawGrid();
+        itemGrid.container.position.x = -373;
+        itemGrid.container.position.y = -153;
+        this.container.addChild(itemGrid.container);
 
         this.controls.controls = {
             left: () => itemGrid.left(),
@@ -153,14 +193,14 @@ export class Outfitter extends Menu<OutfitsState> {
         };
     }
 
-    private async makeOutfitsGrid() {
-        const ids = (await this.gameData.ids).Outfit;
-        const outfits = await Promise.all(ids.map(id =>
-            this.gameData.data.Outfit.get(id, 100)));
-        outfits.sort((a, b) => b.displayWeight - a.displayWeight);
-        const itemGrid = new ItemGrid(this.gameData, outfits);
-        itemGrid.setCounts(this.outfits);
-        return itemGrid;
+    // The binary rebuilds its list at every dialog open, so show() re-lists
+    // before the menu becomes visible. setInput runs first so the owned
+    // outfits (which skip the stock/expression checks) are current.
+    override async show(input: OutfitsState): Promise<OutfitsState> {
+        await this.buildPromise;
+        this.setInput(input);
+        await this.rebuildGrid();
+        return super.show(input);
     }
 
     private buyOutfit() {

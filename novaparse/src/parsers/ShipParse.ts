@@ -63,8 +63,11 @@ export async function ShipParse(ship: ShipResource,
         desc = descResource.text;
     }
     else {
-        desc = "No matching dësc for shïp of id " + base.id;
-        notFoundFunction(desc);
+        // Resolution (dësc 13000 + raw id - 128) is correct; a missing dësc
+        // is a data gap. Show no description rather than leaking a parser
+        // error into the shipyard UI.
+        desc = "";
+        notFoundFunction("No matching dësc for shïp of id " + base.id);
     }
 
     // TODO: Parse Explosions
@@ -234,6 +237,12 @@ export async function ShipParse(ship: ShipResource,
         deathDelay: ship.deathDelay / FPS,
         largeExplosion: ship.deathDelay >= 60,
         displayWeight: ship.id, // TODO: Fix this once displayweight is implemented
+        displayOrder: ship.displayOrder,
+        rawTech: ship.techLevel,
+        stockPercent: Math.max(0, Math.min(100, ship.buyRandom)),
+        availBits: ship.availabilityNCB,
+        require: [ship.require[0], ship.require[1]],
+        contribute: [ship.ownMasks[0], ship.ownMasks[1]],
         inherentAI: ship.inherentAI,
         strength: ship.strength,
         inherentGovt: inherentGovt,

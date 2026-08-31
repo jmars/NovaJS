@@ -11,6 +11,7 @@ import { GameData } from '../client/gamedata/GameData';
 import { MissionData } from "novadatainterface/MissionData";
 import { PlanetData } from "novadatainterface/PlanetData";
 import { ShipData } from "novadatainterface/ShipData";
+import { StringSetData } from "novadatainterface/StringSetData";
 import * as PIXI from 'pixi.js';
 import { firstValueFrom, Observable, Subject } from 'rxjs';
 import { ControlEvent } from '../nova_plugin/controls_plugin';
@@ -23,13 +24,13 @@ import {
 } from '../missions/mission_state_machine';
 import { OfferContext, OfferLocation, isAvailable } from '../missions/availability';
 import { makeRng } from '../player/pilot_files';
-import { ActiveMission, PlayerState } from '../player/player_state';
+import { ActiveMission, MAX_ACTIVE_MISSIONS, PlayerState } from '../player/player_state';
 import { applyCargoEffects } from '../player/cargo';
 import { activeRankContributes } from '../player/ranks';
 import { queuePlayerStateSave } from '../missions/mission_plugin';
 import { rawIdOf } from '../missions/stellar_filter';
 import { Button } from './button';
-import { BriefingDialog, BriefingInput, ButtonLabels, BBS_DONE_POS, BBS_LIST_POS, GameMissionTextEnv } from './briefing';
+import { BriefingDialog, BriefingInput, ButtonLabels, BBS_DONE_POS, BBS_LIST_POS, GameMissionTextEnv, TextDialog } from './briefing';
 import { Menu } from './menu';
 import {
     expandMissionText,
@@ -135,16 +136,11 @@ export async function makeOffer(ui: MissionUiEnv, mission: MissionData): Promise
 // yet.
 export async function computeOffers(location: OfferLocation,
     ui: MissionUiEnv): Promise<MissionOffer[]> {
-    const landedStellar = ui.env.planet(ui.landedStellarId);
-    if (!landedStellar) {
+    const ctx = await offerContext(location, ui);
+    if (!ctx) {
         return [];
     }
-    const systemId = ui.env.systemOfPlanet(ui.landedStellarId);
-    if (!systemId) {
-        return [];
-    }
-    return assembleOffers(location, ui, ui.landedStellarId, landedStellar,
-        systemId);
+    return assembleOffers(location, ui, ctx);
 }
 
 // Ship-location (AvailLoc 2) offers: the përs-hailed missions. In space
@@ -165,24 +161,34 @@ export async function computeShipOffers(ui: MissionUiEnv):
     if (!systemId) {
         return [];
     }
-    return assembleOffers("ship", ui, landedStellarId, landedStellar, systemId);
+    const ctx = buildOfferContext("ship", ui, landedStellarId, landedStellar,
+        systemId);
+    return assembleOffers("ship", ui, ctx);
 }
 
-// The shared offer pipeline: build the OfferContext for one location and
-// stellar, keep the available missions, expand their texts.
-async function assembleOffers(location: OfferLocation, ui: MissionUiEnv,
-    landedStellarId: string, landedStellar: PlanetData,
-    systemId: string): Promise<MissionOffer[]> {
-    const missions: MissionData[] = [];
-    for (const id of ui.env.allMissionIds()) {
-        const mission = ui.env.missionByRawId(rawIdOf(id));
-        if (mission) {
-            missions.push(mission);
-        }
+// The OfferContext for one location at the ui's landed stellar; null when
+// the landing is not resolvable. Shared by computeOffers and the post-accept
+// board re-filter (FUN_0043f100 re-runs availability after every accept).
+export async function offerContext(location: OfferLocation,
+    ui: MissionUiEnv): Promise<OfferContext | null> {
+    const landedStellar = ui.env.planet(ui.landedStellarId);
+    if (!landedStellar) {
+        return null;
     }
-    await ui.textEnv.preload(ui.playerState, missions);
+    const systemId = ui.env.systemOfPlanet(ui.landedStellarId);
+    if (!systemId) {
+        return null;
+    }
+    return buildOfferContext(location, ui, ui.landedStellarId, landedStellar,
+        systemId);
+}
 
-    const ctx: OfferContext = {
+// Assembles the context from pre-resolved facts (the ship-location path
+// resolves its last-landed stellar instead of ui.landedStellarId).
+function buildOfferContext(location: OfferLocation, ui: MissionUiEnv,
+    landedStellarId: string, landedStellar: PlanetData,
+    systemId: string): OfferContext {
+    return {
         landedStellar,
         landedStellarId,
         systemId,
@@ -201,6 +207,20 @@ async function assembleOffers(location: OfferLocation, ui: MissionUiEnv,
         govtByRawId: rawId => ui.env.govtByRawId(rawId),
         system: id => ui.env.system(id),
     };
+}
+
+// The shared offer pipeline: keep the available missions for a prebuilt
+// context and expand their texts.
+async function assembleOffers(location: OfferLocation, ui: MissionUiEnv,
+    ctx: OfferContext): Promise<MissionOffer[]> {
+    const missions: MissionData[] = [];
+    for (const id of ui.env.allMissionIds()) {
+        const mission = ui.env.missionByRawId(rawIdOf(id));
+        if (mission) {
+            missions.push(mission);
+        }
+    }
+    await ui.textEnv.preload(ui.playerState, missions);
 
     const offered = missions.filter(mission => isAvailable(mission, ctx));
     offered.sort((a, b) => b.dispWeight - a.dispWeight);
@@ -261,24 +281,42 @@ const FONT = {
     } as const,
 };
 
+// STR# 2002 holds the BBS/bar status messages (0-based items): 350+name+351
+// is the all-16-slots-busy notice, 352 the empty board (FUN_0043c470 shows
+// these instead of the list).
+const MISSION_STRINGS = "nova:2002";
+const BUSY_NAME_ITEM = 350;
+const BUSY_TAIL_ITEM = 351;
+const NO_OFFERS_ITEM = 352;
+const NO_OFFERS_FALLBACK = "There are no missions available here.";
+
 // The mission-computer list. Selecting an entry opens its briefing dialog;
 // accepted missions leave the list, refused ones stay until the player
 // leaves the BBS. Runs its own loop inside showOffers — the base Menu's
 // one-shot show() does not fit a list-dialog cycle.
 export class MissionBBS extends Menu<void> {
-    private listContainer = new PIXI.Container();
+    protected listContainer = new PIXI.Container();
     private briefing: BriefingDialog;
+    private messageDialog: TextDialog;
     private picked = new Subject<MissionOffer | null>();
     private doneButton: Button;
+    private strings2002: Promise<StringSetData | null>;
+
+    // The queue this UI pops from: the BBS lists AvailLoc 0; the bar
+    // overrides to "bar" (the shared not-BBS queue, re-filtered to 1).
+    protected get location(): OfferLocation {
+        return "bbs";
+    }
 
     // makeUi rebuilds the MissionUiEnv per accept/refuse so ship name/type
     // reflect the ship the player currently owns.
     constructor(private makeUi: () => Promise<MissionUiEnv>,
-        controlEvents: Observable<ControlEvent>, gameData: GameData) {
-        super(gameData, "nova:8502", controlEvents);
+        controlEvents: Observable<ControlEvent>, gameData: GameData,
+        backdrop = "nova:8502") {
+        super(gameData, backdrop, controlEvents);
         this.container.name = 'MissionBBS';
 
-        // Done sits in the button box of the 8502 panel (see briefing.ts
+        // Done sits in the button box of the panel (see briefing.ts
         // for the backdrop geometry).
         this.doneButton = new Button(gameData, "Done", 100,
             { x: BBS_DONE_POS.x, y: BBS_DONE_POS.y });
@@ -288,21 +326,34 @@ export class MissionBBS extends Menu<void> {
         this.container.addChild(this.listContainer);
         this.briefing = new BriefingDialog(gameData, controlEvents);
         this.container.addChild(this.briefing.container);
+        this.messageDialog = new TextDialog(gameData, controlEvents);
+        this.container.addChild(this.messageDialog.container);
+        this.strings2002 = gameData.data.StringSet.get(MISSION_STRINGS)
+            .catch(() => null);
     }
 
     // Shows the offers until the player accepts them all or presses Done.
+    // Unlike the binary's BBS loop this never early-returns: an empty board
+    // shows the STR# 2002 message instead of the list (the bar relies on
+    // that — its screen must open even with no patrons to offer missions).
     // onRefused lets a subclass surface refusal consequences (the bar shows
     // RefuseText) after the state machine ran.
     async showOffers(offers: MissionOffer[],
         onRefused?: (offer: MissionOffer, effects: MissionEffect[]) => Promise<void>):
         Promise<void> {
-        if (offers.length === 0) {
-            return;
-        }
         let remaining = offers;
-        let redraw = true;
         this.container.visible = true;
         this.controls.bind();
+
+        // FUN_0043c470's status messages: all 16 slots busy, else an empty
+        // board. Shown instead of (not on top of) the list.
+        if (await this.showStatusMessage(remaining.length > 0)) {
+            this.controls.unbind();
+            this.container.visible = false;
+            return;
+        }
+
+        let redraw = true;
         while (remaining.length > 0) {
             if (redraw) {
                 this.drawList(remaining);
@@ -317,8 +368,13 @@ export class MissionBBS extends Menu<void> {
             const result = await this.briefing.show(briefingInput(picked, labels));
             this.controls.bind();
             if (result.accepted) {
-                logEffects(acceptOffer(await this.makeUi(), picked));
+                const ui = await this.makeUi();
+                logEffects(acceptOffer(ui, picked));
                 remaining = remaining.filter(offer => offer !== picked);
+                // FUN_0043f100 re-filters the board after every accept:
+                // missions that no longer pass availability (an acceptance
+                // can flip set-bits or consume the last slot) are dropped.
+                remaining = await this.refilter(ui, remaining);
                 redraw = true;
             }
             else {
@@ -333,19 +389,76 @@ export class MissionBBS extends Menu<void> {
         this.container.visible = false;
     }
 
-    private drawList(offers: MissionOffer[]) {
+    // Shows the STR# 2002 busy/empty message instead of the list when
+    // needed; returns whether the dialog was shown.
+    private async showStatusMessage(hasOffers: boolean): Promise<boolean> {
+        const state = (await this.makeUi()).playerState;
+        if (state.activeMissions.length >= MAX_ACTIVE_MISSIONS) {
+            const strings = (await this.strings2002)?.strings;
+            const text = (strings?.[BUSY_NAME_ITEM] ?? "You're already on ")
+                + state.playerName
+                + (strings?.[BUSY_TAIL_ITEM]
+                    ?? " missions - you'll have to abort or finish one before you can accept another.");
+            await this.showMessage(text);
+            return true;
+        }
+        if (!hasOffers) {
+            await this.showMessage(await this.strMessage(NO_OFFERS_ITEM,
+                NO_OFFERS_FALLBACK));
+            return true;
+        }
+        return false;
+    }
+
+    private async strMessage(item: number, fallback: string): Promise<string> {
+        const strings = (await this.strings2002)?.strings;
+        return strings?.[item] ?? fallback;
+    }
+
+    // One STR#-style message box over the board; the controls unbind while
+    // it is up so the Okay button is the only input.
+    protected async showMessage(text: string): Promise<void> {
+        this.controls.unbind();
+        await this.messageDialog.showText(text);
+        this.controls.bind();
+    }
+
+    // Re-runs availability over the remaining board against the state as it
+    // stands now (post-accept).
+    private async refilter(ui: MissionUiEnv,
+        remaining: MissionOffer[]): Promise<MissionOffer[]> {
+        if (remaining.length === 0) {
+            return remaining;
+        }
+        const ctx = await offerContext(this.location, ui);
+        if (!ctx) {
+            return remaining;
+        }
+        return remaining.filter(offer => isAvailable(offer.mission, ctx));
+    }
+
+    protected drawList(offers: MissionOffer[]) {
         this.listContainer.removeChildren();
-        // Entries fill the text box of the 8502 panel (see briefing.ts).
-        let y = BBS_LIST_POS.y;
+        this.drawEntries(offers, BBS_LIST_POS.y);
+    }
+
+    // The offer entries, from startY down. Split from drawList so subclasses
+    // can decorate the box (the bar's welcome text) and reuse the layout.
+    protected drawEntries(offers: MissionOffer[], startY: number) {
+        let y = startY;
         for (const offer of offers) {
             const entry = new PIXI.Text(offer.listText, FONT.entry);
             entry.position.x = BBS_LIST_POS.x;
             entry.position.y = y;
             entry.interactive = true;
             entry.cursor = 'pointer';
-            entry.on('pointertap', () => this.picked.next(offer));
+            entry.on('pointertap', () => this.pick(offer));
             this.listContainer.addChild(entry);
             y += entry.height + 8;
         }
+    }
+
+    protected pick(offer: MissionOffer | null) {
+        this.picked.next(offer);
     }
 }

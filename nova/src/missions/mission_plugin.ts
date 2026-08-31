@@ -34,14 +34,18 @@ import { SystemData } from "novadatainterface/SystemData";
 import { SetContext } from "novadatainterface/expressions";
 import { ControlBits, PlayerState } from "../player/player_state";
 import { PlayerStatePlugin } from "../player/player_state_plugin";
+import { PlayerStateResource } from "../player/player_state_component";
 import { activateRank, deactivateRank } from "../player/ranks";
 import {
     acceptMission,
     abortMission,
     failMission,
+    jumpRerollSeed,
     MissionEffect,
     MissionEnv,
+    rerollAvailRandomRolls,
 } from "./mission_state_machine";
+import { makeRng } from "../player/pilot_files";
 import { globalId, rawIdOf } from "./stellar_filter";
 
 
@@ -298,6 +302,15 @@ export async function ensureMissionEnv(world: World,
     }
     const env = makeMissionEnv(await dataPromise, hooks);
     world.resources.set(MissionEnvResource, env);
+    // FUN_0044aa70 seeds the rolls at new game / load. Without them every
+    // availRandom < 100 mission fails rule 5 until the first jump — the
+    // "no missions at game start" bug. Deterministic (pilot seed + date),
+    // like the jump re-roll.
+    const state = world.resources.get(PlayerStateResource);
+    if (state && Object.keys(state.availRandomRolls).length === 0) {
+        rerollAvailRandomRolls(state, env.allMissionIds(),
+            makeRng(jumpRerollSeed(state)));
+    }
     return env;
 }
 

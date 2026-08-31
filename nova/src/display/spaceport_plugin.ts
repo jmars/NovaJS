@@ -13,7 +13,12 @@ import { snapshotPlayerShip } from '../nova_plugin/ship_snapshot';
 import { shipFreeCargoTons } from '../nova_plugin/ship_plugin';
 import { applyCargoEffects } from '../player/cargo';
 import { PlayerStateResource } from '../player/player_state_component';
-import { processArrival } from '../missions/mission_state_machine';
+import { makeRng } from '../player/pilot_files';
+import {
+    landingRerollSeed,
+    processArrival,
+    rerollAvailRandomRolls,
+} from '../missions/mission_state_machine';
 import {
     ensureMissionEnv,
     MissionEnvResource,
@@ -68,6 +73,12 @@ const LandSystem = new System({
         const missionEnv = world?.resources.get(MissionEnvResource);
         if (stateResource && missionEnv) {
             stateResource.lastStellar = id;
+            // The binary re-rolls every mission's AvailRandom at EVERY
+            // landing (FUN_00457580), not only on jumps, so the BBS/bar
+            // board can change between planets of one system. Runs before
+            // any offers are computed.
+            rerollAvailRandomRolls(stateResource, missionEnv.allMissionIds(),
+                makeRng(landingRerollSeed(stateResource, id)));
             if (!stateResource.landedSystems.includes(id)) {
                 stateResource.landedSystems.push(id);
             }

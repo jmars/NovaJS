@@ -56,6 +56,8 @@ class ShipResource extends BaseResource {
     keyCarried: number;
     contribute: number[];
     require: number[];
+    // Ship's own govt-attribute mask (raw 100/104) — see constructor.
+    ownMasks: number[];
     buyRandom: number;
     hireRandom: number;
     onCapture: string;
@@ -191,6 +193,9 @@ class ShipResource extends BaseResource {
 
         this.contribute = [d.getUint32(896), d.getUint32(900)];
         this.require = [d.getUint32(896), d.getUint32(900)];
+        // The ship's own govt-attribute mask (raw 100/104): FUN_0046cca0
+        // ORs it into the player's mask pool while it is the flagship.
+        this.ownMasks = [d.getUint32(100), d.getUint32(104)];
         this.buyRandom = d.getInt16(904);
         this.hireRandom = d.getInt16(906);
 

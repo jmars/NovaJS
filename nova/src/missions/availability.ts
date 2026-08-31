@@ -94,14 +94,24 @@ export function checkAvailability(mission: MissionData, ctx: OfferContext): Avai
         }
     }
 
-    // 2. AvailLoc equals the offer location. Ship-location (2) offers come
-    // from përs hailed in space (mission_bbs.computeShipOffers); the
-    // trade/shipyard/outfit dialogs do not exist yet, so those locations
-    // never offer for now.
-    if (LOCATION_CODES[ctx.location] !== mission.availLoc) {
+    // 2. AvailLoc. The BBS lists AvailLoc 0; every other location draws
+    // from the shared "not BBS" queue — FUN_0043cf00's pass 1 rejects only
+    // AvailLoc 0, so 1,3,4,5,6 all land there — and each UI re-filters its
+    // own code when it pops an offer (FUN_00448670). The bar UI filters
+    // AvailLoc 1; ship-location (2) offers come from përs hailed in space
+    // (mission_bbs.computeShipOffers); the trade/shipyard/outfit pops have
+    // no UI yet, so those locations never offer for now.
+    if (ctx.location === "bar") {
+        if (mission.availLoc === 0) {
+            reasons.push(`AvailLoc 0 not in the bar queue`);
+        }
+    }
+    else if (LOCATION_CODES[ctx.location] !== mission.availLoc) {
         reasons.push(`AvailLoc ${mission.availLoc} != offered at ${ctx.location}`);
     }
-    if (mission.availLoc >= 4) {
+    // Port-side guard: the trade/shipyard/outfit pops have no UI yet. (The
+    // bar is exempt — it pops from the queue and re-filters AvailLoc 1.)
+    if (ctx.location !== "bar" && mission.availLoc >= 4) {
         reasons.push(`AvailLoc ${mission.availLoc} not offered until its UI exists`);
     }
 
@@ -132,7 +142,9 @@ export function checkAvailability(mission: MissionData, ctx: OfferContext): Avai
                 reasons.push(`AvailRecord ${mission.availRecord}: record ${record}`);
             }
         }
-        else if (record > -mission.availRecord) {
+        else if (record > mission.availRecord) {
+            // Negative: pass iff record <= availRecord (FUN_00441b40 —
+            // -5 needs a record of -5 or lower, not -|5|).
             reasons.push(`AvailRecord ${mission.availRecord}: record ${record}`);
         }
     }
@@ -166,21 +178,21 @@ export function checkAvailability(mission: MissionData, ctx: OfferContext): Avai
         reasons.push(`AvailBits false (${mission.availBits})`);
     }
 
-    // 7. AvailShipType: 0/-1 (or anything under 128) passes; 128+ must be
-    // the ship flown; 1128+ must not; 2128+ is the government-variant band.
-    // Variant groups are not modeled yet (shïp inherent govt unparsed), so
-    // that band requires exactly the named type for now.
+    // 7. AvailShipType bands (FUN_00441b40): 128-896 must be the ship
+    // flown; 1128-1896 must NOT; 2128-2384 and 3128-3400 are the
+    // escort-slot bands (they check the ship's escort-slot fields,
+    // shïp runtime +0x9f4/+0x9f6 — not modeled yet, so they pass);
+    // anything else passes.
     const shipRaw = ctx.shipData === null ? NaN : rawIdOf(ctx.shipData.id);
     const shipType = mission.availShipType;
-    if (shipType >= 128 && shipType < 1128 && shipRaw !== shipType) {
+    if (shipType >= 128 && shipType < 896 + 128 && shipRaw !== shipType) {
         reasons.push(`AvailShipType: must be flying ${shipType}`);
     }
-    else if (shipType >= 1128 && shipType < 2128 && shipRaw === shipType - 1000) {
+    else if (shipType >= 1128 && shipType < 1896 + 128
+        && shipRaw === shipType - 1000) {
         reasons.push(`AvailShipType: must not be flying ${shipType - 1000}`);
     }
-    else if (shipType >= 2128 && shipType < 3256 && shipRaw !== shipType - 2000) {
-        reasons.push(`AvailShipType: must be flying ${shipType - 2000} (or a govt variant)`);
-    }
+    // 2128-2384 / 3128-3400: escort-slot conditions, unmodeled — pass.
 
     // 8. Every set Require bit must be contributed by the ship, an outfit,
     // or an active rank.
@@ -216,15 +228,10 @@ export function checkAvailability(mission: MissionData, ctx: OfferContext): Avai
         }
     }
 
-    // 10. Not already active, not done before, and under the cap of 16.
+    // 10. Not already active (the binary's only history gate — completed
+    // and failed missions CAN be re-offered) and under the cap of 16.
     if (state.activeMissions.some(m => m.missionId === mission.id)) {
         reasons.push("already active");
-    }
-    if (state.completedMissions.includes(mission.id)) {
-        reasons.push("already completed");
-    }
-    if (state.failedMissions.includes(mission.id)) {
-        reasons.push("previously failed");
     }
     if (state.activeMissions.length >= MAX_ACTIVE_MISSIONS) {
         reasons.push(`${MAX_ACTIVE_MISSIONS}-mission cap reached`);

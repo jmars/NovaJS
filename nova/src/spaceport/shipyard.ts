@@ -1,7 +1,8 @@
 import { ShipData } from 'novadatainterface/ShipData';
+import { StringSetData } from 'novadatainterface/StringSetData';
 import { Entity } from 'nova_ecs/entity';
 import * as PIXI from 'pixi.js';
-import { Observable } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 import { GameData } from '../client/gamedata/GameData';
 import { ControlEvent } from '../nova_plugin/controls_plugin';
 import { makeShip } from '../nova_plugin/make_ship';
@@ -9,10 +10,17 @@ import { OutfitsStateComponent } from '../nova_plugin/outfit_plugin';
 import { PlayerShipSelector } from '../nova_plugin/player_ship_plugin';
 import { ShipComponent } from '../nova_plugin/ship_plugin';
 import { Button } from './button';
+import { TextDialog } from './briefing';
 import { ItemGrid, ItemTile } from './item_grid';
+import { MarketContext, orderShips, shipListed } from './market_filter';
 import { Menu } from './menu';
 import { FONT, formatPrice } from './outfitter';
 import * as purchase from './purchase';
+
+// STR# 2002 item 222: the binary shows this message instead of the shipyard
+// when nothing is for sale (FUN_00469e90's empty list).
+const EMPTY_SHIPYARD_STR = "nova:2002";
+const EMPTY_SHIPYARD_ITEM = 222;
 
 
 /**
@@ -30,8 +38,14 @@ export interface ShipyardPurchases {
 export class Shipyard extends Menu<Entity> {
     private pictContainer = new PIXI.Container();
     itemGrid?: ItemGrid<ShipData>;
+    private gridSubscription?: Subscription;
     private purchases?: ShipyardPurchases;
     private buyButton?: Button;
+    private emptyDialog: TextDialog;
+    private emptyStrings: Promise<StringSetData | null>;
+    // The market context (planet tech, masks, control bits, daily rolls),
+    // set by the spaceport before each show(); drives the list filter.
+    private market?: MarketContext;
     private text = {
         description: new PIXI.Text("", FONT.normal),
         priceLabel: new PIXI.Text("Price:", FONT.normal),
@@ -49,6 +63,10 @@ export class Shipyard extends Menu<Entity> {
         };
         this.addButtons(buttons);
         this.buyButton = buttons.buy;
+        this.emptyDialog = new TextDialog(gameData, controlEvents);
+        this.container.addChild(this.emptyDialog.container);
+        this.emptyStrings = gameData.data.StringSet.get(EMPTY_SHIPYARD_STR)
+            .catch(() => null);
 
         buttons.buy.click.subscribe(this.buyShip.bind(this));
         buttons.done.click.subscribe(this.done.bind(this));
@@ -84,16 +102,53 @@ export class Shipyard extends Menu<Entity> {
         this.purchases = purchases;
     }
 
+    /** The market context (planet tech, masks, control bits, daily rolls)
+     * — set by the spaceport before each show(). */
+    setMarketContext(market: MarketContext) {
+        this.market = market;
+    }
+
     protected override async build() {
         await super.build();
-        const itemGrid = await this.makeShipsGrid();
-        this.itemGrid = itemGrid;
-        this.container.addChild(itemGrid.container);
+        // The grid itself is built per show(): the binary re-runs its list
+        // builder (FUN_00469e90) at every dialog open.
+    }
 
-        this.itemGrid.drawGrid();
-        this.itemGrid.container.position.x = -373;
-        this.itemGrid.container.position.y = -153;
-        this.itemGrid.activeTile.subscribe(this.setShipSelected.bind(this));
+    // Re-lists the shipyard market per open (FUN_00469e90): tech gate,
+    // AvailBits/govt-mask/stock checks, then the displayOrder order.
+    // Returns false when nothing is for sale.
+    private async rebuildGrid(): Promise<boolean> {
+        const market = this.market;
+        const ids = (await this.gameData.ids).Ship;
+        const ships: ShipData[] = [];
+        for (const id of ids) {
+            const ship = await this.gameData.data.Ship.get(id, 100);
+            if (market && !shipListed(ship, market)) {
+                continue;
+            }
+            ships.push(ship);
+        }
+        const ordered = orderShips(ships);
+        if (ordered.length === 0) {
+            return false;
+        }
+        this.setItemGrid(new ItemGrid(this.gameData, ordered));
+        return true;
+    }
+
+    private setItemGrid(itemGrid: ItemGrid<ShipData>) {
+        if (this.itemGrid) {
+            this.container.removeChild(this.itemGrid.container);
+            this.gridSubscription?.unsubscribe();
+        }
+        this.itemGrid = itemGrid;
+        this.gridSubscription = itemGrid.activeTile
+            .subscribe(this.setShipSelected.bind(this));
+
+        itemGrid.drawGrid();
+        itemGrid.container.position.x = -373;
+        itemGrid.container.position.y = -153;
+        this.container.addChild(itemGrid.container);
 
         this.controls.controls = {
             left: () => itemGrid.left(),
@@ -105,13 +160,25 @@ export class Shipyard extends Menu<Entity> {
         };
     }
 
-    private async makeShipsGrid() {
-        const ids = (await this.gameData.ids).Ship;
-        const ships = await Promise.all(ids.map(id =>
-            this.gameData.data.Ship.get(id, 100)));
-        ships.sort((a, b) => b.displayWeight - a.displayWeight);
-        const itemGrid = new ItemGrid(this.gameData, ships);
-        return itemGrid;
+    // The binary rebuilds its list at every dialog open, so show() re-lists
+    // first. An empty market shows the STR# 2002 message instead of the
+    // shipyard.
+    override async show(input: Entity): Promise<Entity> {
+        await this.buildPromise;
+        const listed = await this.rebuildGrid();
+        if (!listed) {
+            this.container.visible = true;
+            await this.emptyDialog.showText(await this.emptyMessage());
+            this.container.visible = false;
+            return input;
+        }
+        return super.show(input);
+    }
+
+    private async emptyMessage(): Promise<string> {
+        const strings = (await this.emptyStrings)?.strings;
+        return strings?.[EMPTY_SHIPYARD_ITEM]
+            ?? "There are no ships available for purchase here.";
     }
 
     private setShipSelected(shipTile: ItemTile<ShipData> | undefined) {
