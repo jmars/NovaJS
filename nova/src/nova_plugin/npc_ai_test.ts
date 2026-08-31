@@ -219,6 +219,49 @@ describe("düde AIType behaviors", () => {
         expect(movement.accelerating).toEqual(1);
     });
 
+    it("brakes against its residual velocity inside the spöb approach square",
+        () => {
+            const world = makeWorld();
+            const planet = addEntity(world, "planet",
+                makePlanetEntity("nova:150", 900, 0));
+            const npc = addEntity(world, "npc",
+                makeAiShip(TRADER_DUDE, [750, 0]));
+            world.step();
+            expect(npc.components.get(AIStateComponent)!.destination)
+                .toEqual(planet.uuid);
+            const movement = npc.components.get(MovementStateComponent)!;
+
+            // Inside the 200px approach square (DAT_00575160) with
+            // residual velocity toward the spöb: substate 9 faces against
+            // the relative velocity (west, retrograde of the eastbound
+            // drift).
+            movement.velocity = new Vector(300, 0);
+            movement.rotation = new Angle(Math.PI / 2);
+            world.step();
+            expect(movement.turnTo instanceof Angle).toBeTrue();
+            const face = movement.turnTo as Angle;
+            expect(face.angle).toBeCloseTo(new Angle(-Math.PI / 2).angle);
+            // The misaligned facing gets no brake thrust yet (the
+            // binary's turnRate + 1.0 alignment gate).
+            expect(movement.accelerating).toEqual(0);
+
+            // Aligned: the brake thrusts against the residual.
+            movement.rotation = face;
+            world.step();
+            expect(movement.accelerating).toEqual(1);
+
+            // Residual nulled short of the arrival square (radius/4 =
+            // 37.5): creep onward — thrust toward the spöb once facing it.
+            movement.velocity = new Vector(0, 0);
+            world.step();
+            expect(movement.accelerating).toEqual(0);
+            movement.rotation = movement.turnTo as Angle;
+            world.step();
+            expect(movement.accelerating).toEqual(1);
+            expect((movement.turnTo as Angle).angle)
+                .toBeCloseTo(new Angle(Math.PI / 2).angle);
+        });
+
     it("lands (despawns) when the re-decide draws the spöb it is parked at",
         () => {
             const world = makeWorld();

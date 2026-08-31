@@ -15,13 +15,15 @@
 // each step.
 
 import { Entities, Emit, GetWorld, UUID } from "nova_ecs/arg_types";
+import { Angle } from "nova_ecs/datatypes/angle";
 import { Component } from "nova_ecs/component";
 import { EntityMap } from "nova_ecs/entity_map";
 import { EcsEvent } from "nova_ecs/events";
 import { Optional } from "nova_ecs/optional";
 import { Plugin } from "nova_ecs/plugin";
-import { MovementState, MovementStateComponent } from "nova_ecs/plugins/movement_plugin";
-import { TimeResource } from "nova_ecs/plugins/time_plugin";
+import { MovementPhysics, MovementPhysicsComponent, MovementState,
+    MovementStateComponent, MovementType } from "nova_ecs/plugins/movement_plugin";
+import { Time, TimeResource } from "nova_ecs/plugins/time_plugin";
 import { Query } from "nova_ecs/query";
 import { System } from "nova_ecs/system";
 import { World } from "nova_ecs/world";
@@ -611,6 +613,55 @@ const PursuitMemorySystem = new System({
     },
 });
 
+// The FUN_00408150 gated thrust: face `face` and thrust along it only
+// once the facing is within a turn of aligned (the binary's
+// turnRate + 1.0 tolerance) — a misaligned approach coasts instead of
+// thrusting the wrong way.
+function faceAndThrust(movement: MovementState, face: Angle,
+    physics: MovementPhysics | undefined, time: Time): void {
+    movement.turnTo = face;
+    movement.turnBack = false;
+    const tolerance = (physics?.turnRate ?? 0) * time.delta_s
+        + Math.PI / 180;
+    movement.accelerating =
+        Math.abs(movement.rotation.distanceTo(face).angle) <= tolerance
+            ? 1 : 0;
+}
+
+// The FUN_00408150 substate-9 approach stop (DAT_00575160 = 200.0):
+// inside the destination's approach square the ship stops thrusting at it
+// and instead thrusts against its velocity relative to the destination
+// (facing the targetVel - myVel correction) until the residual is nulled
+// — opposing thrust plus the global drag settle the ship instead of
+// letting it orbit the destination forever. With the residual below the
+// 0.35 px/frame moving threshold (DAT_00575080, BRAKE_SPEED) it creeps
+// onward, thrusting toward the destination again, so the arrival square
+// itself is reached. Returns true while the approach is inside the square
+// (the caller then skips its far-field pursuit).
+const APPROACH_STOP = 200;
+
+function approachStop(movement: MovementState, destMovement: MovementState,
+    physics: MovementPhysics | undefined, time: Time): boolean {
+    const dx = destMovement.position.x - movement.position.x;
+    const dy = destMovement.position.y - movement.position.y;
+    if (Math.abs(dx) > APPROACH_STOP || Math.abs(dy) > APPROACH_STOP) {
+        return false;
+    }
+    // Substate 9 thrusts free (the per-component cap is maxVelocity).
+    movement.targetSpeed = 0;
+    const relVel = movement.velocity.subtract(destMovement.velocity);
+    if (Math.abs(relVel.x) >= BRAKE_SPEED
+        || Math.abs(relVel.y) >= BRAKE_SPEED) {
+        faceAndThrust(movement, relVel.angle.add(Math.PI), physics, time);
+    }
+    else {
+        faceAndThrust(movement,
+            destMovement.position.subtract(movement.position).angle,
+            physics, time);
+    }
+    return true;
+}
+
 // Idle AI ships cruise between the system's planets (FUN_00405590 state 1):
 // a rejection-drawn destination, a square radius/4 arrival test, the
 // ship-type flags3 park wait on arrival, and a re-decide that LANDS
@@ -623,10 +674,10 @@ const TraderTravelSystem = new System({
         MovementStateComponent, TimeResource, UUID, Entities,
         Optional(ArmorComponent), Optional(ShieldComponent),
         Optional(GovernmentComponent), Optional(ShipDataComponent),
-        GetWorld, PlanetsQuery] as const,
+        Optional(MovementPhysicsComponent), GetWorld, PlanetsQuery] as const,
     after: [AggroRangeSystem, InterceptorScanSystem, FollowAI],
     step(config, state, target, movement, time, uuid, entities, armor,
-        shield, govt, shipData, world: World, planets) {
+        shield, govt, shipData, physics, world: World, planets) {
         if (!hasAI(config) || state.fleeing || isDeadInSpace(armor, shield)) {
             return;
         }
@@ -647,9 +698,18 @@ const TraderTravelSystem = new System({
 
         // Parked at a spöb, waiting out the arrival wait (+0x4c, the
         // flags3-gated rand(75)+100 / rand(200)+300) before the next
-        // decision.
+        // decision. The binary holds the stop through the wait: thrust
+        // against any residual drift so the ship settles at the spöb
+        // instead of coasting through it.
         if (state.waitUntil !== undefined && state.waitUntil > time.time) {
-            movement.accelerating = 0;
+            if (Math.abs(movement.velocity.x) >= BRAKE_SPEED
+                || Math.abs(movement.velocity.y) >= BRAKE_SPEED) {
+                faceAndThrust(movement,
+                    movement.velocity.angle.add(Math.PI), physics, time);
+            }
+            else {
+                movement.accelerating = 0;
+            }
             return;
         }
         state.waitUntil = undefined;
@@ -659,7 +719,18 @@ const TraderTravelSystem = new System({
         if (state.destination !== undefined
             && entities.has(state.destination)) {
             if (!isArrived(movement, state.destination, entities)) {
+                if (approachStop(movement,
+                    entities.get(state.destination)!.components
+                        .get(MovementStateComponent)!, physics, time)) {
+                    return;
+                }
                 movement.turnTo = state.destination;
+                // The substate-b cruise cap (FUN_00408150: 0.5× speed
+                // while traveling) so the arrival brake meets a ship it
+                // can actually stop.
+                if (physics?.movementType === MovementType.INERTIAL) {
+                    movement.targetSpeed = physics.maxVelocity * 0.5;
+                }
                 movement.accelerating = 1;
                 return;
             }

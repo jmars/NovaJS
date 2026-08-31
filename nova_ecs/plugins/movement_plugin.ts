@@ -64,15 +64,52 @@ export const MovementSystem = new System({
     after: [TimeSystem],
 });
 
+// The binary's global drag on living ships: velocity *= 0.995 every
+// ~21ms frame (FUN_00433050, DAT_00575448; smoothed dt DAT_00735448), so
+// unthrusted ships bleed speed instead of coasting forever. Expressed
+// against delta_s so the port's frame rate doesn't change the decay.
+export const DRAG = 0.995;
+export const DRAG_FRAME_S = 0.021;
+
+export function dragFactor(time: Time): number {
+    return Math.pow(DRAG, time.delta_s / DRAG_FRAME_S);
+}
+
+// One axis of the binary's per-component thrust clamp (FUN_0043b4e0): the
+// thrust delta advances the velocity component toward the clamp (the
+// facing-projected max speed) and never past it. A component already
+// beyond the clamp gets no thrust; drag wears it back down.
+function advanceComponent(v: number, thrust: number, clamp: number): number {
+    if (thrust > 0) {
+        return v >= clamp ? v : Math.min(v + thrust, clamp);
+    }
+    if (thrust < 0) {
+        return v <= clamp ? v : Math.max(v + thrust, clamp);
+    }
+    return v;
+}
+
 function inertialControls(state: MovementState, physics: MovementPhysics,
     time: Time, entities: EntityMap) {
     handleTurning(state, physics, time, entities);
 
-    // Acceleration
+    state.velocity = state.velocity.scale(dragFactor(time));
+
+    // Acceleration, clamped per velocity component toward facing * the
+    // cruise cap so the ship cannot exceed its rated speed. The optional
+    // targetSpeed is the binary's +0x34 cruise cap (0 when unset = free
+    // thrust capped at maxVelocity); drag bleeds a faster ship back down
+    // to it, which is how the binary decelerates a cruise approach.
     if (state.accelerating > 0) {
-        state.velocity = state.velocity.add(
-            state.rotation.getUnitVector()
-                .normalize(state.accelerating * physics.acceleration * time.delta_s));
+        const cap = state.targetSpeed !== undefined && state.targetSpeed > 0
+            ? Math.min(state.targetSpeed, physics.maxVelocity)
+            : physics.maxVelocity;
+        const facing = state.rotation.getUnitVector();
+        const thrust = state.accelerating * physics.acceleration * time.delta_s;
+        const clamp = facing.scale(cap);
+        state.velocity = new Vector(
+            advanceComponent(state.velocity.x, facing.x * thrust, clamp.x),
+            advanceComponent(state.velocity.y, facing.y * thrust, clamp.y));
     }
     state.velocity = state.velocity.shortenToLength(physics.maxVelocity);
 
@@ -86,11 +123,18 @@ function inertialessControls(state: MovementState, physics: MovementPhysics,
     time: Time, entities: EntityMap) {
     handleTurning(state, physics, time, entities);
 
+    const drag = dragFactor(time);
+    state.velocity = state.velocity.scale(drag);
+
     if (state.targetSpeed === undefined) {
         state.targetSpeed = state.velocity.length;
     }
 
-    state.targetSpeed += state.accelerating * physics.acceleration * time.delta_s;
+    // The cruise speed decays under the same drag (the binary's cruise
+    // scalar +0x48 *= 0.995 per frame), so an unthrusted inertialess ship
+    // slows down instead of coasting at its old speed.
+    state.targetSpeed = state.targetSpeed * drag
+        + state.accelerating * physics.acceleration * time.delta_s;
     state.targetSpeed = Math.min(state.targetSpeed, physics.maxVelocity);
     state.targetSpeed = Math.max(state.targetSpeed, 0);
 
