@@ -20,6 +20,7 @@ import { World } from "nova_ecs/world";
 import { randInt, seedRng } from "../player/pilot_files";
 import { AMBIENT_GATE, FleetPlugin, FleetQuotesResource, MAX_AMBIENT_SHIPS } from "./fleet_plugin";
 import { AmbientPlugin } from "./ambient_plugin";
+import { GovernmentComponent } from "./npc_plugin";
 import { LandEvent } from "./planet_plugin";
 import { GameDataResource } from "./game_data_resource";
 import { SystemIdResource } from "./system_id_resource";
@@ -40,12 +41,16 @@ const QUOTE_STR = "nova:5000";
 const BARREN_SYSTEM = "nova:304";
 const INHABITED_SYSTEM = "nova:305";
 
-const SHIP = { ...getDefaultShipData(), id: SHIP_ID, name: "Test Ship" };
+const SHIP = { ...getDefaultShipData(), id: SHIP_ID, name: "Test Ship",
+    // An inherent Polaris combat govt: a stale field-map would tag the ship
+    // with this instead of the flët's govt.
+    inherentGovt: "nova:130" };
 const FLEET = {
     ...getDefaultFleetData(),
     id: FLEET_ID,
     name: "Test Fleet",
     leadShipType: SHIP_ID,
+    govt: "nova:128",
     quote: 5000,
 };
 
@@ -78,8 +83,8 @@ async function flush(): Promise<void> {
 // table and draws nothing) so the specs can pick state seeds with known
 // burst outcomes. Returns the picked matching index for every hitting
 // roll.
-function fleetRolls(seed: number, eligible: number, rolls: number):
-    number[] {
+function fleetRolls(seed: number, eligible: number, rolls: number,
+    postSpawnDraws: number): number[] {
     seedRng(seed);
     const picks: number[] = [];
     for (let roll = 0; roll < rolls; roll++) {
@@ -91,13 +96,19 @@ function fleetRolls(seed: number, eligible: number, rolls: number):
         }
         if (randInt(0x100) < eligible) {
             picks.push(randInt(eligible));
+            // The spawn itself draws: the per-ship aggress roll
+            // (FUN_004254b0) and the Quote digits. Burn that many draws —
+            // the draw bound does not move the LCG state.
+            for (let i = 0; i < postSpawnDraws; i++) {
+                randInt(1);
+            }
         }
     }
     return picks;
 }
 
 function spawnHit(seed: number, eligible: number): boolean {
-    return fleetRolls(seed, eligible, 1).length > 0;
+    return fleetRolls(seed, eligible, 1, 0).length > 0;
 }
 
 function findSeed(eligible: number, wantHit: boolean): number {
@@ -114,7 +125,7 @@ function findSeed(eligible: number, wantHit: boolean): number {
 function findMultiHitSeed(eligible: number, rolls: number, minUnique: number):
     number {
     for (let seed = 1; seed < 200_000; seed++) {
-        const picks = fleetRolls(seed, eligible, rolls);
+        const picks = fleetRolls(seed, eligible, rolls, 1);
         if (new Set(picks).size >= minUnique) {
             return seed;
         }
@@ -278,9 +289,9 @@ describe("fleet arrival-burst cadence", () => {
             await stepFrames(2);
 
             // The two events' rolls are consecutive draws on the same
-            // stream: exactly the two distinct flëts the mirrored
-            // sequence picks.
-            const picks = fleetRolls(seed, MANY, 2);
+            // stream (each hit burns its spawn's aggress roll): exactly the
+            // two distinct flëts the mirrored sequence picks.
+            const picks = fleetRolls(seed, MANY, 2, 1);
             expect(new Set(picks).size).toBeGreaterThanOrEqual(2);
             const expected = [...new Set(picks)]
                 .map(pick => `fleet-ship nova:${910 + pick} 0`).sort();
@@ -299,6 +310,33 @@ describe("fleet 64-slot bound", () => {
         expect(fleetShips().every(key => key.startsWith("fleet-ship dummy")))
             .toBeTrue();
         expect(quotes()).toEqual([]);
+    });
+});
+
+describe("fleet ship government", () => {
+    it("tags the flët's ships with the FLËT's govt, never the ship class's",
+        async () => {
+            // FUN_004259b0: slot+0x98 = the flët record's govt. The fixture
+            // ship class is inherently Polaris, the flët is Federation.
+            const { world, fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
+                undefined, makePlayerState(findSeed(1, true)));
+            const key = fleetShips()[0];
+            expect(key).toBeDefined();
+            expect(world.entities.get(key)!
+                .components.get(GovernmentComponent)!.id)
+                .toEqual("nova:128");
+        });
+
+    it("spawns independent ships for a flët with no govt", async () => {
+        const fleets: Array<[string, FleetData]> = [
+            [FLEET_ID, { ...FLEET, govt: null }],
+        ];
+        const { world, fleetShips } = await makeTestWorld(INHABITED_SYSTEM,
+            fleets, makePlayerState(findSeed(1, true)));
+        const key = fleetShips()[0];
+        expect(key).toBeDefined();
+        expect(world.entities.get(key)!
+            .components.get(GovernmentComponent)).toBeUndefined();
     });
 });
 

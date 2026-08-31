@@ -183,12 +183,11 @@ export async function spawnFleet(gameData: GameDataInterface, env: MissionEnv,
             console.warn(`[fleets] unknown shïp ${shipId} (flët ${fleet.id})`);
             continue;
         }
-        // FUN_00425280 passes govt -1 to FUN_004259b0 for ambient fleets,
-        // and that path tags the ship with the SHIP CLASS's own government
-        // (ship table +0x12) — not the flët's. The port tags the decoded
-        // inherent COMBAT govt (ShipParse), which is null for attr-only
-        // ships (pirates, Auroran warships) — hostile to nobody.
-        const ship = makeDudeShip(null, shipData, shipData.inherentGovt);
+        // FUN_004259b0: every ship of the flët (lead + escort groups) is
+        // tagged with the FLËT's own government (the flët record's govt
+        // field) — never the ship class's inherent govt. A null flët govt
+        // leaves the ship independent.
+        const ship = makeDudeShip(null, shipData, fleet.govt);
         warpInAt(ship, origin);
         entities.set(`fleet-ship ${fleet.id} ${index}`, ship);
     }

@@ -13,7 +13,7 @@ import { ShipData } from "novadatainterface/ShipData";
 import { Entity } from "nova_ecs/entity";
 import { CollisionVulnerabilityComponent } from "./collision_interaction";
 import { AIConfigComponent, AIStateComponent } from "./npc_ai_plugin";
-import { GovernmentComponent, makeNpc } from "./npc_plugin";
+import { ChooseRandomTargetComponent, GovernmentComponent, makeNpc } from "./npc_plugin";
 import { randInt } from "../player/pilot_files";
 
 export { GovernmentComponent };
@@ -85,9 +85,12 @@ export function setNoCollision(ship: Entity): void {
 
 // Builds an NPC ship for a dude (`dude` null = a plain fleet lead ship):
 // makeShip + the NPC AI components + a govt tag + the AIType config and
-// boarding profile.
+// boarding profile. `aggress` pins the AIConfig aggress WITHOUT drawing
+// (the përs path: FUN_004235c0 reads the clamped përs value, no roll —
+// only dûdes FUN_0041ba80 and fleets/mïsn FUN_004254b0 roll rand(3)^2).
 export function makeDudeShip(dude: DudeData | null, shipData: ShipData,
-    govtId: string | null = dude?.govt ?? null): Entity {
+    govtId: string | null = dude?.govt ?? null,
+    aggress?: number): Entity {
     const ship = makeNpc(shipData);
     if (govtId) {
         ship.components.set(GovernmentComponent, { id: govtId });
@@ -99,17 +102,24 @@ export function makeDudeShip(dude: DudeData | null, shipData: ShipData,
     const aiType = dude
         ? (dude.aiType || shipData.inherentAI)
         : (shipData.inherentAI || 0);
+    // FUN_004254b0/FUN_0041ba80 roll aggress per spawn: rand(3) ^ 2 is
+    // {2, 3, 0} uniform. The flee threshold derives from it (FleeSystem);
+    // the përs pass their own in pers_plugin.
     ship.components.set(AIConfigComponent, {
         aiType,
-        aggress: 2,
-        // Wimpy traders (AIType 1) run at 50% shields; the other AI types
-        // stand and fight. Përs override this from their own data in P3.
-        coward: aiType === 1 ? 50 : null,
+        aggress: aggress ?? randInt(3) ^ 2,
+        coward: null,
     });
     ship.components.set(AIStateComponent, {
-        fled: false,
+        anger: 0,
         attackedBy: null,
+        fleeing: false,
     });
+    // AI ships acquire through the FUN_0040e020 scan only; the legacy
+    // random-target layer stays for aiType 0 (FIDELITY row 52).
+    if (aiType >= 1) {
+        ship.components.delete(ChooseRandomTargetComponent);
+    }
     ship.components.set(BoardingProfileComponent, {
         dudeId: dude?.id ?? null,
         booty: dude?.booty ?? 0,

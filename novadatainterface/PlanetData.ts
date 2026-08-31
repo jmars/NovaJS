@@ -6,6 +6,8 @@ export interface PlanetData extends SpaceObjectData {
     landingDesc: string;
     position: [number, number];
     govt: string | null;   // resolved gövt global id; null = independent
+    radius: number;        // spöb sprite half-size (FUN_00462410); the trader
+                           // arrival test is radius/4; engine default 150
     inhabited: boolean;    // spöb flag 0x00000020 cleared
     hasBar: boolean;       // spöb flag 0x00000040
     tech: number;          // tech level, controls outfit/ship availability
@@ -27,6 +29,7 @@ export function getDefaultPlanetData(): PlanetData {
         landingDesc: "default",
         position: [0, 0],
         govt: null,
+        radius: 150,
         inhabited: true,
         hasBar: false,
         tech: 0,

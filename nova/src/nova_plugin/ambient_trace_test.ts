@@ -109,7 +109,8 @@ describe("ambient reference model", () => {
                 for (let roll = 0; roll < ROLLS; roll++) {
                     if (randInt(7) === 0) {
                         // përs branch: 100 eligible përs, no draw when
-                        // the table draw misses.
+                        // the table draw misses; FUN_004235c0 rolls no
+                        // aggress for the përs ship.
                         if (randInt(0x3fe) < 100) {
                             keys.push(`pers-ship nova:${960 + randInt(100)}`);
                         }
@@ -119,13 +120,15 @@ describe("ambient reference model", () => {
                         // flët branch: 10 eligible flëts.
                         if (randInt(0x100) < 10) {
                             keys.push(`fleet-ship nova:${950 + randInt(10)} 0`);
+                            randInt(3); // the lead ship's aggress roll
                         }
                         continue;
                     }
                     // dûde branch: one pair of weight 100, one ship class
-                    // of weight 100, ±750 scatter.
+                    // of weight 100, the ship's aggress roll, ±750 scatter.
                     randInt(100);
                     randInt(100);
+                    randInt(3);
                     randInt(1500);
                     randInt(1500);
                     keys.push(`dude-ship nova:900 ${dudeCounter++}`);
@@ -149,7 +152,7 @@ describe("ambient reference model", () => {
             if (roll.spawned) {
                 expect(roll.key).not.toBeNull();
                 expect(roll.draws[roll.draws.length - 1].kind).toMatch(
-                    /pick|scatter/);
+                    /pick|scatter|aggress/);
             }
             else {
                 expect(roll.key).toBeNull();
@@ -184,11 +187,15 @@ describe("ambient reference model", () => {
             else {
                 dude = true;
                 want.push("gate-pers", "gate-fleet", "dude-pair",
-                    "dude-ship", "scatter", "scatter");
+                    "dude-ship", "aggress", "scatter", "scatter");
             }
-            // The pick draw only follows a table hit.
+            // The pick draw only follows a table hit; dûde and flët ships
+            // roll aggress after it, përs ships do not.
             if (roll.spawned && roll.branch !== "dude") {
                 want.push("pick");
+                if (roll.branch === "fleet") {
+                    want.push("aggress");
+                }
             }
             expect(kinds).toEqual(want);
         }

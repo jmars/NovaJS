@@ -112,13 +112,18 @@ export function persActive(pers: PersData, state: PlayerState, systemId: string,
 function spawnPers(entities: EntityMap, shipData: ShipData, pers: PersData,
     state: PlayerState, weaponOutfits: Map<string, string>,
     origin: Position): void {
-    const ship = makeDudeShip(null, shipData, pers.govt);
+    // FUN_004235c0: govt = përs+2, AI = përs+4, aggress = përs+6 clamped
+    // (<1 → 1, >2 → 4) — the përs path carries the clamped value with NO
+    // aggress roll, so makeDudeShip must not draw one (it would desync the
+    // shared engine LCG stream).
+    const aggress = pers.aggress < 1 ? 1 : pers.aggress > 2 ? 4 : pers.aggress;
+    const ship = makeDudeShip(null, shipData, pers.govt, aggress);
     // The përs's own AI overrides what makeDudeShip guessed from the ship
     // class; aiType 0 means "use the ship's inherent AI" (dude.ts rule),
     // and coward 0 means the përs never flees.
     ship.components.set(AIConfigComponent, {
         aiType: pers.aiType || shipData.inherentAI,
-        aggress: pers.aggress,
+        aggress,
         coward: pers.coward > 0 ? pers.coward : null,
     });
     const progress = state.pers[pers.id];

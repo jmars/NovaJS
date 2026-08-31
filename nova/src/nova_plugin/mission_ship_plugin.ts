@@ -315,6 +315,12 @@ async function spawnMissionShip(gameData: GameDataInterface, env: MissionEnv,
     }
 
     const ship = makeDudeShip(request.dude, shipData);
+    // Binary mission ships are AI type 6 (FUN_004259b0's mïsn path): they
+    // acquire and retaliate like warships, but never jump out on target
+    // loss — TargetLostSystem despawns only AI 1-2, so a mission ship
+    // whose target dies must stay.
+    const config = ship.components.get(AIConfigComponent)!;
+    ship.components.set(AIConfigComponent, { ...config, aiType: 6 });
     ship.components.get(MovementStateComponent)!.position =
         shipStartPosition(mission.shipStart, systemData, env, rng);
 

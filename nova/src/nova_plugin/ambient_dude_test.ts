@@ -237,8 +237,13 @@ describe("dûde spawn (FUN_0041ba80)", () => {
         const { world, ambientKeys } = await makeTestWorld();
         const key = ambientKeys("dude-ship ")[0];
         expect(key).toBeDefined();
-        expect(world.entities.get(key)!.components.get(AIConfigComponent))
-            .toEqual({ aiType: 4, aggress: 2, coward: null });
+        // FUN_0041ba80 rolls aggress = rand(3) ^ 2 ∈ {0, 2, 3}; coward is
+        // null always (fleeing derives from aggress + govt flag 0x10).
+        const config =
+            world.entities.get(key)!.components.get(AIConfigComponent)!;
+        expect(config.aiType).toEqual(4);
+        expect([0, 2, 3]).toContain(config.aggress);
+        expect(config.coward).toBeNull();
     });
 
     it("respects DUDE_SLOT_LIMIT=55 across all ship keys", async () => {

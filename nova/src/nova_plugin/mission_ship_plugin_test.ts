@@ -363,6 +363,20 @@ describe("mission ship spawning and goals", () => {
             expect(indexes).toEqual([0, 1]);
         });
 
+    it("spawns mission ships at AI type 6 (never jump out on target loss)",
+        async () => {
+            // FUN_004259b0's mïsn path sets slot+0x88 = 6 regardless of the
+            // düde's AI or the ship class's inherent AI (stock traders are
+            // inherentAI 1-2 — as such they must not despawn mid-mission).
+            const activeMission = active(DESTROY_MISSION);
+            const { missionShips } = await makeTestWorld([activeMission]);
+            expect(missionShips().length).toBeGreaterThan(0);
+            for (const ship of missionShips()) {
+                expect(ship.components.get(AIConfigComponent)!.aiType)
+                    .toEqual(6);
+            }
+        });
+
     it("does not spawn where the ShipSyst filter does not match",
         async () => {
             const { missionShips } = await makeTestWorld([

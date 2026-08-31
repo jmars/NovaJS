@@ -95,6 +95,8 @@ function persPasses(seed: number, eligible: number, rolls: number):
         }
         if (randInt(PERS_TABLE_ROLL) < eligible) {
             picks.push(randInt(eligible));
+            // FUN_004235c0 rolls NO aggress for the përs ship (the clamped
+            // përs value is written directly) — nothing more to draw.
         }
     }
     return picks;
@@ -266,13 +268,26 @@ describe("përs spawn", () => {
         // The përs's name replaces the ship-class name on the target display.
         expect(persShip().components.get(ShipDataComponent)!.name)
             .toEqual("Jack Folstam");
+        // FUN_004235c0 clamps the përs aggress: 3 > 2 → 4.
         expect(persShip().components.get(AIConfigComponent)).toEqual(
-            { aiType: 4, aggress: 3, coward: 25 });
+            { aiType: 4, aggress: 4, coward: 25 });
         expect(persShip().components.get(PersComponent)!.persId).toEqual(PERS_ID);
 
         // WeapCount 2 on top of the ship's stock 1 of the granting outfit.
         const outfits = persShip().components.get(OutfitsStateComponent)!;
         expect(outfits.get(OUTFIT_ID)).toEqual({ count: 3 });
+    });
+
+    it("clamps the përs aggress (<1 → 1, >2 → 4)", async () => {
+        const low = await makeTestWorld(SYSTEM_ID,
+            makePlayerState(SPAWN_SEED), { aggress: 0 });
+        expect(low.persShip().components.get(AIConfigComponent)!.aggress)
+            .toEqual(1);
+
+        const high = await makeTestWorld(SYSTEM_ID,
+            makePlayerState(SPAWN_SEED), { aggress: 5 });
+        expect(high.persShip().components.get(AIConfigComponent)!.aggress)
+            .toEqual(4);
     });
 
     it("applies ShieldMod to the ship's shields", async () => {

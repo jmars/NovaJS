@@ -96,8 +96,9 @@ export function shipSlotCount(entities: EntityMap): number {
 // the sÿst's 8 (dûde, count) pairs (FUN_0046b600), then a (ship class,
 // count) pair from the dûde's 16 pairs (FUN_0046b4b0), and spawn ONE ship
 // of that class. The ship carries the DÛDE's government and AI
-// (makeDudeShip) — never the ship class's inherent government; that
-// single-faction tagging is the melee fix.
+// (makeDudeShip) — never the ship class's inherent government; flët ships
+// likewise carry the FLËT's govt (FUN_004259b0). Ambient ships are
+// single-faction — that is the melee fix.
 async function spawnDudeAmbient(gameData: GameDataInterface,
     entities: EntityMap, world: World, systemData: SystemData,
     origin: Position): Promise<boolean> {

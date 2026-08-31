@@ -1,10 +1,13 @@
-// Headless World specs for the düde AIType behaviors (P2): trader travel
-// and Coward fleeing, warship/interceptor Aggress-range targeting, and
+// Headless World specs for the düde AIType behaviors: trader travel and
+// fleeing, the FUN_0040e020 acquisition scan (police-assist, the aggress
+// square for the player, the strength odds filter, the nearest-attacker
+// fallback), FUN_004192d0 retaliation (govt-difference gated, with the
+// suppression cascade), the target-loss jump-out for AI 1-2, and
 // retaliation on DamagedEvent. Runs a real nova_ecs World with only
 // NpcAIPlugin (no NpcPlugin) so the generic random-target AI does not
 // interfere — except the last describe, which adds NpcPlugin to exercise
-// the shared neutral-player gate in ChooseRandomTarget. makeDudeShip
-// supplies the AI components under test.
+// the shared neutral-player gate in ChooseRandomTarget for aiType-0 ships.
+// makeDudeShip supplies the AI components under test.
 
 import "jasmine";
 import { MockGameData } from "novadatainterface/MockGameData";
@@ -20,21 +23,24 @@ import { World } from "nova_ecs/world";
 import { MissionEnv } from "../missions/mission_state_machine";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import { makePlayerState, makeTestEnv } from "../missions/test_fixtures";
+import { randInt, seedRng } from "../player/pilot_files";
 import { BoardingProfileComponent, makeDudeShip } from "./dude";
 import { DamagedEvent } from "./death_plugin";
 import { OwnerComponent } from "./fire_weapon_plugin";
 import { AIConfigComponent, AIStateComponent, NpcAIPlugin } from "./npc_ai_plugin";
-import { GovernmentComponent, NpcPlugin, playerIsHostile,
-    ShootAllWeaponsComponent } from "./npc_plugin";
+import { ChooseRandomTargetComponent, GovernmentComponent, NpcPlugin,
+    playerIsHostile, ShootAllWeaponsComponent } from "./npc_plugin";
 import { PlayerStateResource } from "../player/player_state_component";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { PlanetComponent } from "./planet_plugin";
 import { makeShip } from "./make_ship";
 import { ArmorComponent, ShieldComponent } from "./health_plugin";
-import { ShipComponent } from "./ship_plugin";
+import { ShipComponent, ShipDataComponent } from "./ship_plugin";
 import { GameDataResource } from "./game_data_resource";
 import { Stat } from "./stat";
+import { SystemIdResource } from "./system_id_resource";
 import { TargetComponent } from "./target_component";
+import { TargetRemovedEvent } from "./target_plugin";
 import { WeaponsStateComponent } from "./weapons_state";
 
 const SHIP_ID = "nova:600";
@@ -43,9 +49,17 @@ const SHIP: ShipData = {
     id: SHIP_ID,
     name: "Test Ship",
 };
+// A twice-as-strong ship class, for the odds-filter discriminator.
+const STRONG_SHIP: ShipData = {
+    ...getDefaultShipData(),
+    id: "nova:601",
+    name: "Strong Ship",
+    strength: 1000,
+};
 
 // Polaris (nova:130) and the Federation (nova:128) are mutual enemies in
-// the test fixtures (classes/enemies [16] vs [1]).
+// the test fixtures (classes/enemies [16] vs [1]); the Rebels (nova:141)
+// are unrelated to everyone — no declared war either way.
 const TRADER_DUDE: DudeData = {
     ...getDefaultDudeData(),
     id: "nova:800",
@@ -54,12 +68,18 @@ const TRADER_DUDE: DudeData = {
     booty: 0x0040,
     shipTypes: [{ ship: SHIP_ID, probability: 100 }],
 };
+const NO_AI_DUDE: DudeData = { ...TRADER_DUDE, aiType: 0 };
+
+// The fixtures' system nova:300, given Polaris as its government for the
+// per-system clean-player amnesty.
+const SYSTEM_ID = "nova:300";
 
 const TIME = { time: 1_000_000, delta_s: 0, delta_ms: 0, frame: 0 };
 
 function makeWorld(envOverrides: Partial<MissionEnv> = {}): World {
     const gameData = new MockGameData();
     gameData.data.Ship.map.set(SHIP_ID, SHIP);
+    gameData.data.Ship.map.set("nova:601", STRONG_SHIP);
     const world = new World();
     world.resources.set(TimeResource, { ...TIME });
     world.resources.set(GameDataResource, gameData);
@@ -94,6 +114,9 @@ function makeAiShip(dude: DudeData, position: [number, number],
     govtId: string | null = dude.govt): Entity {
     const ship = makeDudeShip(dude, SHIP, govtId);
     ship.components.set(TargetComponent, { target: undefined });
+    // The ShipDataProvider resolves ShipDataComponent for every ship in a
+    // full world; set it here so strengthOf reads it deterministically.
+    ship.components.set(ShipDataComponent, SHIP);
     ship.components.get(MovementStateComponent)!.position =
         new Position(position[0], position[1]);
     return ship;
@@ -108,13 +131,44 @@ function makePlayerShip(position: [number, number]): Entity {
     return ship;
 }
 
+function addGovtShip(world: World, key: string,
+    govtId: string | null, position: [number, number],
+    shipData: ShipData = SHIP): Entity {
+    const ship = makeShip(shipData);
+    ship.components.set(TargetComponent, { target: undefined });
+    // See makeAiShip: the effective ship data, for strengthOf.
+    ship.components.set(ShipDataComponent, shipData);
+    if (govtId !== null) {
+        ship.components.set(GovernmentComponent, { id: govtId });
+    }
+    ship.components.get(MovementStateComponent)!.position =
+        new Position(position[0], position[1]);
+    return addEntity(world, key, ship);
+}
+
+// Pins the aggress roll so range/threshold specs are deterministic.
+function pinAggress(npc: Entity, aggress: number): void {
+    const config = npc.components.get(AIConfigComponent)!;
+    npc.components.set(AIConfigComponent, { ...config, aggress });
+}
+
+const DAMAGE = {
+    shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
+    passThroughShield: 0, knockback: 0,
+};
+
 describe("düde AIType behaviors", () => {
     it("tags dude ships with an AI config and boarding profile", () => {
+        // FUN_0041ba80 rolls aggress = rand(3) ^ 2 per spawn.
+        seedRng(7);
         const npc = makeDudeShip(TRADER_DUDE, SHIP);
+        seedRng(7);
+        const aggress = randInt(3) ^ 2;
+        expect([0, 2, 3]).toContain(aggress);
         expect(npc.components.get(AIConfigComponent)).toEqual(
-            { aiType: 1, aggress: 2, coward: 50 });
+            { aiType: 1, aggress, coward: null });
         expect(npc.components.get(AIStateComponent)).toEqual(
-            { fled: false, attackedBy: null });
+            { anger: 0, attackedBy: null, fleeing: false });
         expect(npc.components.get(BoardingProfileComponent)).toEqual({
             dudeId: TRADER_DUDE.id,
             booty: 0x0040,
@@ -122,9 +176,13 @@ describe("düde AIType behaviors", () => {
             plundered: false,
         });
 
-        // Brave traders have no coward threshold.
-        expect(makeDudeShip({ ...TRADER_DUDE, aiType: 2 }, SHIP)
-            .components.get(AIConfigComponent)!.coward).toBeNull();
+        // AI ships acquire through the FUN_0040e020 scan only: the legacy
+        // random-target layer is stripped.
+        expect(npc.components.has(ChooseRandomTargetComponent)).toBeFalse();
+
+        // aiType 0 keeps the legacy random-target layer.
+        expect(makeDudeShip(NO_AI_DUDE, SHIP)
+            .components.has(ChooseRandomTargetComponent)).toBeTrue();
 
         // Plain fleet leads fall back to the ship's inherent AI.
         const fleetShip = makeDudeShip(null, { ...SHIP, inherentAI: 4 });
@@ -136,8 +194,9 @@ describe("düde AIType behaviors", () => {
 
     it("sends an idle trader toward a planet", () => {
         const world = makeWorld();
-        const near = makePlanetEntity("nova:130", 1000, 0);
-        const far = makePlanetEntity("nova:140", -2000, 0);
+        // Trader destination candidates sit on the map: |x|,|y| < 1000.
+        const near = makePlanetEntity("nova:130", 900, 0);
+        const far = makePlanetEntity("nova:140", -900, -400);
         addEntity(world, "near-planet", near);
         addEntity(world, "far-planet", far);
         const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
@@ -149,49 +208,167 @@ describe("düde AIType behaviors", () => {
         expect(movement.accelerating).toEqual(1);
     });
 
-    it("flees when shields drop under the coward threshold, and stays fled",
+    it("lands (despawns) when the re-decide draws the spöb it is parked at",
         () => {
             const world = makeWorld();
-            const npc = makeAiShip(TRADER_DUDE, [0, 0]);
-            npc.components.set(TargetComponent, { target: "nova:999" });
+            // One candidate spöb: every successful draw picks it.
+            const planet = addEntity(world, "planet",
+                makePlanetEntity("nova:150", 900, 0));
+            const npc = addEntity(world, "npc",
+                makeAiShip(TRADER_DUDE, [0, 0]));
+            world.step();
+            expect(npc.components.get(MovementStateComponent)!.turnTo)
+                .toEqual(planet.uuid);
+
+            // Arrive (radius/4 = 37.5 for the default sprite radius 150):
+            // park and wait rand(200)+300 frames.
+            const movement = npc.components.get(MovementStateComponent)!;
+            movement.position = new Position(890, 0);
+            world.step();
+            expect(movement.accelerating).toEqual(0);
+            expect(npc.components.get(AIStateComponent)!.destination)
+                .toBeUndefined();
+            const waitUntil = npc.components.get(AIStateComponent)!.waitUntil;
+            expect(waitUntil).toBeGreaterThan(TIME.time);
+
+            // After the wait, the re-decide draws the same spöb → LAND
+            // (binary state 0x14): the trader despawns into the planet.
+            world.resources.get(TimeResource)!.time =
+                waitUntil! + 1;
+            world.step();
+            expect(world.entities.get("npc")).toBeUndefined();
+        });
+
+    it("jumps out (despawns) when no destination is eligible", () => {
+        // FUN_0040c790's 0xffff → FUN_00415b80/FUN_00410670 jump out: no
+        // planet inside the |x|,|y| < 1000 map bounds to draw.
+        const world = makeWorld();
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+        expect(world.entities.get("npc")).toBeUndefined();
+    });
+
+    it("flees below the aggress-1 shield threshold while the target lives",
+        () => {
+            const base = makeTestEnv();
+            const world = makeWorld({
+                government: id => id === "nova:130"
+                    ? { ...base.env.government("nova:130")!, flags: 0x10 }
+                    : base.env.government(id),
+            });
+            const npc = addEntity(world, "npc",
+                makeAiShip(TRADER_DUDE, [0, 0]));
+            pinAggress(npc, 1); // 30% threshold
+            const enemy = addGovtShip(world, "enemy", "nova:128", [500, 0]);
+            npc.components.set(TargetComponent, { target: enemy.uuid });
             npc.components.set(ShieldComponent,
-                new Stat({ current: 40, max: 100, recharge: 0 }));
+                new Stat({ current: 25, max: 100, recharge: 0 }));
             npc.components.set(WeaponsStateComponent, new Map([
                 ["nova:200", { count: 4, firing: true }],
             ]));
-            addEntity(world, "npc", npc);
             world.step();
 
             const movement = npc.components.get(MovementStateComponent)!;
             expect(movement.turnBack).toBeTrue();
             expect(movement.turnTo).toBeFalsy();
             expect(movement.accelerating).toEqual(1);
+            // The target is kept (binary state 3 holds +0x70); only the
+            // weapons fall silent.
             expect(npc.components.get(TargetComponent)!.target)
-                .toBeUndefined();
+                .toEqual(enemy.uuid);
             expect(npc.components.get(WeaponsStateComponent)!
                 .get("nova:200")!.firing).toBeFalse();
-            expect(npc.components.get(AIStateComponent)!.fled).toBeTrue();
+            expect(npc.components.get(AIStateComponent)!.fleeing).toBeTrue();
 
-            // The latch is sticky: shields back up does not re-engage.
+            // Not sticky on shields: recharging does not re-engage while
+            // the target lives.
             npc.components.set(ShieldComponent,
                 new Stat({ current: 100, max: 100, recharge: 0 }));
             world.step();
-            expect(npc.components.get(AIStateComponent)!.fled).toBeTrue();
+            expect(npc.components.get(AIStateComponent)!.fleeing).toBeTrue();
             expect(npc.components.get(MovementStateComponent)!.turnBack)
                 .toBeTrue();
+
+            // The latch ends with the target: un-flee, clear the anger,
+            // re-decide.
+            world.entities.delete("enemy");
+            world.step();
+            expect(npc.components.get(AIStateComponent)!.fleeing).toBeFalse();
+            expect(npc.components.get(TargetComponent)!.target)
+                .toBeUndefined();
         });
 
-    it("brave traders (coward null) do not flee at low shields", () => {
-        const world = makeWorld();
-        const npc = makeAiShip({ ...TRADER_DUDE, aiType: 2 }, [0, 0]);
+    it("ships with aggress 3 never flee at low shields", () => {
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags: 0x10 }
+                : base.env.government(id),
+        });
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        pinAggress(npc, 3);
+        const enemy = addGovtShip(world, "enemy", "nova:128", [500, 0]);
+        npc.components.set(TargetComponent, { target: enemy.uuid });
         npc.components.set(ShieldComponent,
-            new Stat({ current: 10, max: 100, recharge: 0 }));
-        addEntity(world, "npc", npc);
+            new Stat({ current: 5, max: 100, recharge: 0 }));
         world.step();
 
-        expect(npc.components.get(AIStateComponent)!.fled).toBeFalse();
+        expect(npc.components.get(AIStateComponent)!.fleeing).toBeFalse();
         expect(npc.components.get(MovementStateComponent)!.turnBack)
             .toBeFalse();
+    });
+
+    it("ships of governments without the retreat flag never flee", () => {
+        // Default Polaris flags: no 0x10.
+        const world = makeWorld();
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        pinAggress(npc, 1);
+        const enemy = addGovtShip(world, "enemy", "nova:128", [500, 0]);
+        npc.components.set(TargetComponent, { target: enemy.uuid });
+        npc.components.set(ShieldComponent,
+            new Stat({ current: 5, max: 100, recharge: 0 }));
+        world.step();
+
+        expect(npc.components.get(AIStateComponent)!.fleeing).toBeFalse();
+    });
+
+    it("a përs coward threshold flees below coward% of shields", () => {
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags: 0x10 }
+                : base.env.government(id),
+        });
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        // aggress 3 alone would never flee; the përs coward drives it.
+        npc.components.set(AIConfigComponent,
+            { aiType: 1, aggress: 3, coward: 25 });
+        const enemy = addGovtShip(world, "enemy", "nova:128", [500, 0]);
+        npc.components.set(TargetComponent, { target: enemy.uuid });
+        npc.components.set(ShieldComponent,
+            new Stat({ current: 20, max: 100, recharge: 0 }));
+        world.step();
+
+        expect(npc.components.get(AIStateComponent)!.fleeing).toBeTrue();
+    });
+
+    it("owned ships (escorts, fighters) never flee", () => {
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags: 0x10 }
+                : base.env.government(id),
+        });
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        pinAggress(npc, 1);
+        npc.components.set(OwnerComponent, { owner: "carrier" });
+        const enemy = addGovtShip(world, "enemy", "nova:128", [500, 0]);
+        npc.components.set(TargetComponent, { target: enemy.uuid });
+        npc.components.set(ShieldComponent,
+            new Stat({ current: 5, max: 100, recharge: 0 }));
+        world.step();
+
+        expect(npc.components.get(AIStateComponent)!.fleeing).toBeFalse();
     });
 
     it("dead-in-space ships neither flee nor travel", () => {
@@ -207,56 +384,98 @@ describe("düde AIType behaviors", () => {
         addEntity(world, "npc", npc);
         world.step();
 
-        expect(npc.components.get(AIStateComponent)!.fled).toBeFalse();
+        expect(npc.components.get(AIStateComponent)!.fleeing).toBeFalse();
         const movement = npc.components.get(MovementStateComponent)!;
         expect(movement.turnBack).toBeFalse();
         expect(movement.turnTo).not.toEqual(planet.uuid);
         expect(movement.accelerating).toEqual(0);
     });
 
-    it("interceptor inside the aggress range targets a hostile player",
-        () => {
-            const world = makeWorld();
-            const state = makePlayerState();
-            state.legalRecord["nova:130"] = -1; // Polaris, crimeTol 0
-            world.resources.set(PlayerStateResource, state);
-            const npc = addEntity(world, "npc",
-                makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
-            const player = addEntity(world, "player",
-                makePlayerShip([2000, 0])); // aggress 2 -> radius 3000
-            world.step();
-
-            expect(npc.components.get(TargetComponent)!.target)
-                .toEqual(player.uuid);
-        });
-
-    it("interceptors leave a neutral player alone", () => {
+    it("targets a hostile player inside the aggress square", () => {
         const world = makeWorld();
+        const state = makePlayerState();
+        state.legalRecord["nova:130"] = -1; // Polaris, crimeTol 0
+        world.resources.set(PlayerStateResource, state);
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+        pinAggress(npc, 2); // |dx|,|dy| ≤ 1200
+        // Euclidean distance 1273 — outside the old circular radius model's
+        // 1200, but the binary tests each axis separately.
         const player = addEntity(world, "player",
-            makePlayerShip([2000, 0])); // inside radius 3000
+            makePlayerShip([900, 900]));
+        world.step();
+
+        expect(npc.components.get(TargetComponent)!.target)
+            .toEqual(player.uuid);
+    });
+
+    it("ignores a hostile player outside the aggress square", () => {
+        const world = makeWorld();
+        const state = makePlayerState();
+        state.legalRecord["nova:130"] = -1;
+        world.resources.set(PlayerStateResource, state);
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+        pinAggress(npc, 2);
+        // |dx| = 1300 > 1200 (a circular radius 3000 would still include
+        // this point — the square test is what excludes it).
+        addEntity(world, "player", makePlayerShip([1300, 0]));
         world.step();
 
         expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
     });
 
-    it("warship inside the aggress radius does not target a neutral player",
-        () => {
-            const world = makeWorld();
-            const state = makePlayerState(); // empty legal record
-            world.resources.set(PlayerStateResource, state);
-            const npc = addEntity(world, "npc",
-                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
-            const player = addEntity(world, "player",
-                makePlayerShip([100, 0])); // well inside radius 3000
-            world.step();
+    it("interceptors leave a neutral player alone", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 4 }, [0, 0]));
+        pinAggress(npc, 2);
+        addEntity(world, "player", makePlayerShip([200, 0]));
+        world.step();
 
-            expect(npc.components.get(TargetComponent)!.target)
-                .toBeUndefined();
-            expect(player.components.get(TargetComponent)!.target)
-                .toBeUndefined();
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+    });
+
+    it("a xenophobic government does not acquire the player outside the "
+        + "aggress square", () => {
+        // FUN_004101d0 skips the player slot: the general scan must not
+        // reach the player through xenophobia (no GovernmentComponent to
+        // test) — pass 2's aggress square is the only player path.
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags: 0x1 }
+                : base.env.government(id),
         });
+        const state = makePlayerState();
+        state.legalRecord["nova:130"] = -1; // hostile: below -crimeTol 0
+        world.resources.set(PlayerStateResource, state);
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        pinAggress(npc, 2); // square 1200
+        addEntity(world, "player", makePlayerShip([50_000, 0]));
+        world.step();
+
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+    });
+
+    it("derelict-govt ships are not acquired even at war", () => {
+        // FUN_0046bdf0 skips when EITHER govt carries flag 0x800.
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:128"
+                ? { ...base.env.government("nova:128")!, flags: 0x800 }
+                : base.env.government(id),
+        });
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        pinAggress(npc, 2);
+        // The Federation is Polaris's mutual enemy — but derelict now.
+        addGovtShip(world, "enemy", "nova:128", [500, 0]);
+        world.step();
+
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+    });
 
     it("warship targets the player once the record drops below -crimeTol",
         () => {
@@ -274,6 +493,7 @@ describe("düde AIType behaviors", () => {
             world.resources.set(PlayerStateResource, state);
             const npc = addEntity(world, "npc",
                 makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            pinAggress(npc, 2);
             const player = addEntity(world, "player",
                 makePlayerShip([100, 0]));
             world.step();
@@ -302,36 +522,146 @@ describe("düde AIType behaviors", () => {
         expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
     });
 
-    it("warship prefers an enemy-govt ship over the player", () => {
+    it("prefers the nearest hostile ship over a neutral player", () => {
         const world = makeWorld();
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
-        const enemy = makeShip(SHIP);
-        enemy.components.set(TargetComponent, { target: undefined });
-        enemy.components.set(GovernmentComponent, { id: "nova:128" });
-        enemy.components.get(MovementStateComponent)!.position =
-            new Position(500, 0);
-        addEntity(world, "enemy", enemy);
-        const player = addEntity(world, "player", makePlayerShip([100, 0]));
+        pinAggress(npc, 2);
+        addGovtShip(world, "enemy", "nova:128", [500, 0]);
+        addEntity(world, "player", makePlayerShip([100, 0]));
         world.step();
 
         expect(npc.components.get(TargetComponent)!.target)
-            .toEqual(enemy.uuid);
+            .toEqual(world.entities.get("enemy")!.uuid);
     });
 
-    it("ignores ships outside the aggress range and wanders instead", () => {
+    it("acquires enemies at any distance — the odds filter is the range",
+        () => {
+            const world = makeWorld();
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            pinAggress(npc, 1);
+            const enemy = addGovtShip(world, "enemy", "nova:128",
+                [50_000, 0]);
+            world.step();
+
+            // No radius on NPC-vs-NPC acquisition: equal strength passes
+            // the odds filter (maxOdds 100 = 1:1) at any distance.
+            expect(npc.components.get(TargetComponent)!.target)
+                .toEqual(enemy.uuid);
+        });
+
+    it("the odds filter drops enemies too strong for the odds", () => {
+        const base = makeTestEnv();
         const world = makeWorld();
-        const planet = addEntity(world, "planet",
-            makePlanetEntity("nova:150", 100, 0));
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
-        const player = addEntity(world, "player",
-            makePlayerShip([5000, 0])); // beyond radius 3000
+        pinAggress(npc, 1);
+        // Strength 1000 vs my 100: 1000 > 100 × maxOdds 100/100 → dropped.
+        addGovtShip(world, "strong", "nova:128", [500, 0], STRONG_SHIP);
+        world.step();
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+
+        // Raising the government's MaxOdds to 1000 admits the same enemy:
+        // 1000 ≤ 100 × 1000/100.
+        const brave = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, maxOdds: 1000 }
+                : base.env.government(id),
+        });
+        const braverNpc = addEntity(brave, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        pinAggress(braverNpc, 1);
+        addGovtShip(brave, "strong", "nova:128", [500, 0], STRONG_SHIP);
+        brave.step();
+        expect(braverNpc.components.get(TargetComponent)!.target)
+            .toEqual(brave.entities.get("strong")!.uuid);
+    });
+
+    it("police-assist takes the victim an allied ship is fighting", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        pinAggress(npc, 2);
+        // The Rebels are NOT mutual enemies of Polaris — the victim is
+        // only reachable through the allied ship's live target.
+        const victim = addGovtShip(world, "victim", "nova:141", [2000, 0]);
+        const ally = addGovtShip(world, "ally", "nova:130", [100, 0]);
+        ally.components.set(TargetComponent, { target: victim.uuid });
         world.step();
 
+        expect(npc.components.get(TargetComponent)!.target)
+            .toEqual(victim.uuid);
+    });
+
+    it("police-assist respects the odds filter", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        pinAggress(npc, 2);
+        const victim = addGovtShip(world, "victim", "nova:141", [2000, 0],
+            STRONG_SHIP);
+        const ally = addGovtShip(world, "ally", "nova:130", [100, 0]);
+        ally.components.set(TargetComponent, { target: victim.uuid });
+        world.step();
+
+        // Strength 1000 > 100 × 1: the assist is refused.
         expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
-        expect(npc.components.get(MovementStateComponent)!.turnTo)
-            .toEqual(planet.uuid);
+    });
+
+    it("falls back to the nearest ship attacking me or my escorts", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        pinAggress(npc, 2);
+        // The Rebels attacker is not a mutual enemy: only the FUN_0040faa0
+        // fallback (whoever attacks me or mine, any government) applies.
+        const attacker = addGovtShip(world, "attacker", "nova:141",
+            [400, 0]);
+        attacker.components.set(TargetComponent, { target: npc.uuid });
+        world.step();
+
+        expect(npc.components.get(TargetComponent)!.target)
+            .toEqual(attacker.uuid);
+    });
+
+    it("AI 1-2 jump out when they lose their target", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc", makeAiShip(TRADER_DUDE, [0, 0]));
+        world.step();
+
+        world.emit(TargetRemovedEvent, "gone-target", [npc.uuid]);
+        world.step();
+        expect(world.entities.get("npc")).toBeUndefined();
+    });
+
+    it("AI 3-4 just clear the grudge and re-decide", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        npc.components.set(AIStateComponent,
+            { anger: 5, attackedBy: "someone", fleeing: true });
+        world.step();
+
+        world.emit(TargetRemovedEvent, "gone-target", [npc.uuid]);
+        world.step();
+        expect(world.entities.get("npc")).toBeDefined();
+        expect(npc.components.get(AIStateComponent)!.anger).toEqual(0);
+        expect(npc.components.get(AIStateComponent)!.attackedBy).toBeNull();
+        expect(npc.components.get(AIStateComponent)!.fleeing).toBeFalse();
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+    });
+
+    it("AI 6 (mission ships) never jump out on target loss", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 6 }, [0, 0]));
+        world.step();
+
+        world.emit(TargetRemovedEvent, "gone-target", [npc.uuid]);
+        world.step();
+        expect(world.entities.get("npc")).toBeDefined();
+        expect(npc.components.get(AIStateComponent)!.anger).toEqual(0);
     });
 
     it("retaliates against a criminal player and latches attackedBy", () => {
@@ -346,24 +676,30 @@ describe("düde AIType behaviors", () => {
         world.step();
         expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
 
-        world.emit(DamagedEvent, {
-            damage: {
-                shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
-                passThroughShield: 0, knockback: 0,
-            },
-            damager: player.uuid,
-        }, [npc.uuid]);
+        world.emit(DamagedEvent, { damage: DAMAGE, damager: player.uuid },
+            [npc.uuid]);
         world.step();
 
         expect(npc.components.get(TargetComponent)!.target)
             .toEqual(player.uuid);
         expect(npc.components.get(AIStateComponent)!.attackedBy)
             .toEqual(player.uuid);
+        // Anger accumulates the shield + armor damage.
+        expect(npc.components.get(AIStateComponent)!.anger).toEqual(2);
     });
 
     it("does not retaliate against a neutral player's stray hit", () => {
-        const world = makeWorld();
-        // Empty legal record: no government considers the player hostile.
+        // FUN_004192d0's per-system amnesty: a player whose record with the
+        // system's government is clean (2 × crimeTol ≤ record, crimeTol 0
+        // here) and who is not targeting this ship is amnestied.
+        const base = makeTestEnv();
+        const world = makeWorld({
+            system: id => id === SYSTEM_ID
+                ? { ...base.env.system(SYSTEM_ID)!, government: "nova:130" }
+                : base.env.system(id),
+        });
+        world.resources.set(SystemIdResource, SYSTEM_ID);
+        // Empty legal record: the player is clean everywhere.
         world.resources.set(PlayerStateResource, makePlayerState());
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
@@ -371,20 +707,34 @@ describe("düde AIType behaviors", () => {
             makePlayerShip([50_000, 0]));
         world.step();
 
-        world.emit(DamagedEvent, {
-            damage: {
-                shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
-                passThroughShield: 0, knockback: 0,
-            },
-            damager: player.uuid,
-        }, [npc.uuid]);
+        world.emit(DamagedEvent, { damage: DAMAGE, damager: player.uuid },
+            [npc.uuid]);
         world.step();
 
-        // The hit is ignored (cowards would still flee via FleeSystem),
-        // but the last attacker stays latched.
         expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+        expect(npc.components.get(AIStateComponent)!.attackedBy).toBeNull();
+        expect(npc.components.get(AIStateComponent)!.anger).toEqual(0);
+    });
+
+    it("retaliates against a different-government shooter with no declared "
+        + "war", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        // The Rebels are unrelated to Polaris — no class/enemy lists connect
+        // them — but any different-govt attacker is retaliated against.
+        const rebel = addGovtShip(world, "rebel", "nova:141", [50_000, 0]);
+        world.step();
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
+
+        world.emit(DamagedEvent, { damage: DAMAGE, damager: rebel.uuid },
+            [npc.uuid]);
+        world.step();
+
+        expect(npc.components.get(TargetComponent)!.target)
+            .toEqual(rebel.uuid);
         expect(npc.components.get(AIStateComponent)!.attackedBy)
-            .toEqual(player.uuid);
+            .toEqual(rebel.uuid);
     });
 
     it("does not retaliate against a same-government ship's stray hit",
@@ -396,74 +746,93 @@ describe("düde AIType behaviors", () => {
                 makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [100, 0]));
             world.step();
 
-            world.emit(DamagedEvent, {
-                damage: {
-                    shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
-                    passThroughShield: 0, knockback: 0,
-                },
-                damager: ally.uuid,
-            }, [npc.uuid]);
+            world.emit(DamagedEvent, { damage: DAMAGE, damager: ally.uuid },
+                [npc.uuid]);
             world.step();
 
             expect(npc.components.get(TargetComponent)!.target)
                 .toBeUndefined();
+            expect(npc.components.get(AIStateComponent)!.attackedBy)
+                .toBeNull();
         });
 
-    it("retaliates against an enemy-government shooter", () => {
+    it("anger accumulates across hits on the same shooter", () => {
         const world = makeWorld();
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
-        const enemy = makeShip(SHIP);
-        enemy.components.set(TargetComponent, { target: undefined });
-        // The Federation (nova:128) and Polaris (nova:130) are mutual
-        // enemies in the fixtures.
-        enemy.components.set(GovernmentComponent, { id: "nova:128" });
-        enemy.components.get(MovementStateComponent)!.position =
-            new Position(50_000, 0);
-        addEntity(world, "enemy", enemy);
+        const rebel = addGovtShip(world, "rebel", "nova:141", [50_000, 0]);
         world.step();
+
+        world.emit(DamagedEvent, { damage: DAMAGE, damager: rebel.uuid },
+            [npc.uuid]);
+        world.emit(DamagedEvent, { damage: DAMAGE, damager: rebel.uuid },
+            [npc.uuid]);
+        world.step();
+
+        expect(npc.components.get(AIStateComponent)!.anger).toEqual(4);
+        expect(npc.components.get(TargetComponent)!.target)
+            .toEqual(rebel.uuid);
+    });
+
+    it("does not retaliate against a same-owner shooter", () => {
+        const world = makeWorld();
+        const npc = addEntity(world, "npc",
+            makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+        npc.components.set(OwnerComponent, { owner: "carrier" });
+        const sibling = addGovtShip(world, "sibling", "nova:141", [100, 0]);
+        sibling.components.set(OwnerComponent, { owner: "carrier" });
+        world.step();
+
+        // Different governments — but the owner chain suppresses.
+        world.emit(DamagedEvent, { damage: DAMAGE, damager: sibling.uuid },
+            [npc.uuid]);
+        world.step();
+
         expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
-
-        world.emit(DamagedEvent, {
-            damage: {
-                shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
-                passThroughShield: 0, knockback: 0,
-            },
-            damager: enemy.uuid,
-        }, [npc.uuid]);
-        world.step();
-
-        expect(npc.components.get(TargetComponent)!.target)
-            .toEqual(enemy.uuid);
+        expect(npc.components.get(AIStateComponent)!.anger).toEqual(0);
     });
 
-    it("retaliates against the ship behind a projectile hit, not the projectile", () => {
-        const world = makeWorld();
+    it("does not retaliate against attacks on a derelict-govt ship", () => {
+        const base = makeTestEnv();
+        const world = makeWorld({
+            government: id => id === "nova:130"
+                ? { ...base.env.government("nova:130")!, flags: 0x800 }
+                : base.env.government(id),
+        });
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
-        const shooter = makeShip(SHIP);
-        shooter.components.set(TargetComponent, { target: undefined });
-        shooter.components.set(GovernmentComponent, { id: "nova:128" });
-        addEntity(world, "shooter", shooter);
-        // Projectiles carry their shooter as OwnerComponent and pass their
-        // own uuid as the DamagedEvent damager.
-        const projectile = new Entity("projectile");
-        projectile.components.set(OwnerComponent, { owner: shooter.uuid });
-        addEntity(world, "projectile", projectile);
+        const rebel = addGovtShip(world, "rebel", "nova:141", [50_000, 0]);
         world.step();
 
-        world.emit(DamagedEvent, {
-            damage: {
-                shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
-                passThroughShield: 0, knockback: 0,
-            },
-            damager: projectile.uuid,
-        }, [npc.uuid]);
+        world.emit(DamagedEvent, { damage: DAMAGE, damager: rebel.uuid },
+            [npc.uuid]);
         world.step();
 
-        expect(npc.components.get(TargetComponent)!.target)
-            .toEqual(shooter.uuid);
+        expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
     });
+
+    it("retaliates against the ship behind a projectile hit, not the projectile",
+        () => {
+            const world = makeWorld();
+            const npc = addEntity(world, "npc",
+                makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
+            const shooter = addGovtShip(world, "shooter", "nova:128",
+                [0, 0]);
+            // Projectiles carry their shooter as OwnerComponent and pass
+            // their own uuid as the DamagedEvent damager.
+            const projectile = new Entity("projectile");
+            projectile.components.set(OwnerComponent,
+                { owner: shooter.uuid });
+            addEntity(world, "projectile", projectile);
+            world.step();
+
+            world.emit(DamagedEvent,
+                { damage: DAMAGE, damager: projectile.uuid }, [npc.uuid]);
+            world.step();
+
+            expect(npc.components.get(TargetComponent)!.target)
+                .toEqual(shooter.uuid);
+        });
 
     it("does not retaliate when the shooter is gone before the event lands",
         () => {
@@ -472,13 +841,8 @@ describe("düde AIType behaviors", () => {
                 makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
             world.step();
 
-            world.emit(DamagedEvent, {
-                damage: {
-                    shield: 1, armor: 1, ionization: 0, ionizationColor: 0,
-                    passThroughShield: 0, knockback: 0,
-                },
-                damager: "gone-ship",
-            }, [npc.uuid]);
+            world.emit(DamagedEvent,
+                { damage: DAMAGE, damager: "gone-ship" }, [npc.uuid]);
             world.step();
 
             expect(npc.components.get(TargetComponent)!.target)
@@ -502,9 +866,9 @@ describe("düde AIType behaviors", () => {
         });
 });
 
-// The generic NpcPlugin random-target AI (ChooseRandomTarget) shares the
-// AggroRange rule: the player is only rollable once hostile to the
-// chooser's government. These specs run both plugins.
+// The generic NpcPlugin random-target AI (ChooseRandomTarget) is the
+// aiType-0 legacy layer — AI ships (types 1-4) strip it at spawn. These
+// specs run both plugins against aiType-0 ships.
 describe("legacy random-target AI vs the player", () => {
     function makeRandomTargetWorld(
         envOverrides: Partial<MissionEnv> = {}): World {
@@ -515,10 +879,7 @@ describe("legacy random-target AI vs the player", () => {
 
     it("does not roll a neutral player as a random target", () => {
         const world = makeRandomTargetWorld();
-        // A trader: AggroRange ignores aiType 1, so any player target
-        // could only come from ChooseRandomTarget.
-        const npc = addEntity(world, "npc",
-            makeAiShip(TRADER_DUDE, [0, 0]));
+        const npc = addEntity(world, "npc", makeAiShip(NO_AI_DUDE, [0, 0]));
         addEntity(world, "player", makePlayerShip([100, 0]));
         world.step();
 
@@ -530,8 +891,7 @@ describe("legacy random-target AI vs the player", () => {
         const state = makePlayerState();
         state.legalRecord["nova:130"] = -1; // Polaris, crimeTol 0
         world.resources.set(PlayerStateResource, state);
-        const npc = addEntity(world, "npc",
-            makeAiShip(TRADER_DUDE, [0, 0]));
+        const npc = addEntity(world, "npc", makeAiShip(NO_AI_DUDE, [0, 0]));
         const player = addEntity(world, "player", makePlayerShip([100, 0]));
         world.step();
 
@@ -545,8 +905,7 @@ describe("legacy random-target AI vs the player", () => {
         // no target, so an idling NPC sprayed its weapons into the void
         // forever (looked like it was circling and firing at a battle).
         const world = makeRandomTargetWorld();
-        const npc = addEntity(world, "npc",
-            makeAiShip(TRADER_DUDE, [0, 0]));
+        const npc = addEntity(world, "npc", makeAiShip(NO_AI_DUDE, [0, 0]));
         npc.components.set(WeaponsStateComponent, new Map([
             ["nova:200", { count: 4, firing: false }],
         ]));

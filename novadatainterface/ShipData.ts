@@ -26,6 +26,7 @@ export interface ShipData extends SpaceObjectData {
     deathDelay: number;
     displayWeight: number;
     inherentAI: number;                   // raw shïp AI field: 0 none, 1 wimpy trader .. 4 interceptor
+    strength: number;                     // raw shïp Strength (offset 70): the AI odds-filter weight
     inherentGovt: string | null;          // inherent COMBAT govt (global gövt id), decoded from the
                                           // band-encoded shïp govt field (see ShipParse); null when
                                           // the ship has no combat govt and so is nobody's inherent enemy
@@ -51,6 +52,7 @@ export function getDefaultShipData(): ShipData {
         deathDelay: 1,
         displayWeight: 1,
         inherentAI: 0,
+        strength: 100,
         inherentGovt: null,
         crew: 0,
         onCapture: "",

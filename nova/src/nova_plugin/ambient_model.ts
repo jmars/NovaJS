@@ -20,6 +20,12 @@
 //   the dûde entry, rand(shipWeightTotal) its ship class, then two
 //   rand(1500) draws scatter the ship ±750 around the player.
 //
+//   Every spawned DÛDE and FLËT ship additionally rolls aggress =
+//   rand(3) ^ 2 (FUN_004254b0/FUN_0041ba80): one rand(3) draw at ship
+//   build — after the flët pick, and between the dûde ship-class pick and
+//   its scatters. The përs path rolls nothing (FUN_004235c0 writes the
+//   clamped përs value directly).
+//
 // An empty branch draws nothing (the port's documented draw-count
 // convention, mirrored here): with no eligible përs/flët or an empty dûde
 // table the gate draws still happen but the branch draw does not.
@@ -39,7 +45,7 @@ export const PERS_TABLE_ROLL = 0x3fe;
 
 // One recorded LCG draw: which roll site, from what bound, what came out.
 export interface DrawRecord {
-    kind: "gate-pers" | "gate-fleet" | "table" | "pick"
+    kind: "gate-pers" | "gate-fleet" | "table" | "pick" | "aggress"
         | "dude-pair" | "dude-ship" | "scatter";
     bound: number;
     value: number;
@@ -102,6 +108,7 @@ export function ambientRoll(shape: BranchShape, event: number, roll: number,
             return { ...base, branch: "pers", spawned: false };
         }
         const picked = draw(draws, "pick", shape.persEligible);
+        // FUN_004235c0 writes the clamped përs aggress directly — no roll.
         return {
             ...base, branch: "pers", spawned: true,
             key: PERS_PICK_KEY(picked),
@@ -116,6 +123,8 @@ export function ambientRoll(shape: BranchShape, event: number, roll: number,
             return { ...base, branch: "fleet", spawned: false };
         }
         const picked = draw(draws, "pick", shape.fleetEligible);
+        // The fixture fleets carry a lead ship only.
+        draw(draws, "aggress", 3);
         return {
             ...base, branch: "fleet", spawned: true,
             key: FLEET_PICK_KEY(picked),
@@ -128,6 +137,7 @@ export function ambientRoll(shape: BranchShape, event: number, roll: number,
     }
     draw(draws, "dude-pair", shape.dudePairWeight);
     draw(draws, "dude-ship", shape.dudeShipWeight);
+    draw(draws, "aggress", 3);
     draw(draws, "scatter", 1500);
     draw(draws, "scatter", 1500);
     return {

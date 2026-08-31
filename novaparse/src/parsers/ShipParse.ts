@@ -235,6 +235,7 @@ export async function ShipParse(ship: ShipResource,
         largeExplosion: ship.deathDelay >= 60,
         displayWeight: ship.id, // TODO: Fix this once displayweight is implemented
         inherentAI: ship.inherentAI,
+        strength: ship.strength,
         inherentGovt: inherentGovt,
         crew: ship.crew,
         onCapture: ship.onCapture,
