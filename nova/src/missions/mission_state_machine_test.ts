@@ -200,29 +200,31 @@ describe("mission state machine", function() {
         setBit(state, 900);
         acceptMission(state, DEADLINE_MISSION, env, START.id);
         // Completing for the Federation (+10) is heard about beyond it:
-        // ally Ally Govt gets +10, enemy Polaris -10; classmate Vell-os
-        // (shares class 1) and unrelated Rebels hear nothing.
+        // ally Ally Govt gets the same half-delta (+5), enemy Polaris the
+        // opposite half-delta (-5); classmate Vell-os (shares class 1) and
+        // unrelated Rebels hear nothing — FUN_00440410.
         const arrival = processArrival(state, env, EARTH.id);
         expect(arrival.completed).toEqual(["nova:500"]);
         expect(state.legalRecord["nova:128"]).toEqual(10);
-        expect(state.legalRecord["nova:129"]).toEqual(10);
-        expect(state.legalRecord["nova:130"]).toEqual(-10);
+        expect(state.legalRecord["nova:129"]).toEqual(5);
+        expect(state.legalRecord["nova:130"]).toEqual(-5);
         expect(state.legalRecord["nova:136"] ?? 0).toEqual(0);
         expect(state.legalRecord["nova:141"] ?? 0).toEqual(0);
         expect(arrival.effects).toContain(jasmine.objectContaining(
             { kind: "record", govt: "nova:128", delta: 10 }));
         expect(arrival.effects).toContain(jasmine.objectContaining(
-            { kind: "record", govt: "nova:130", delta: -10 }));
+            { kind: "record", govt: "nova:130", delta: -5 }));
 
-        // Failing costs half the reward, propagated the same way.
+        // Failing costs half the reward, propagated the same way (the
+        // opposite half-delta rounds .5 away from zero).
         const late = makePlayerState();
         acceptMission(late, DEADLINE_MISSION, env, START.id);
         late.date = advanceDate(late.date, 6);
         const failure = processArrival(late, env, EARTH.id);
         expect(failure.failed).toEqual(["nova:500"]);
         expect(late.legalRecord["nova:128"]).toEqual(-5);
-        expect(late.legalRecord["nova:129"]).toEqual(-5);
-        expect(late.legalRecord["nova:130"]).toEqual(5);
+        expect(late.legalRecord["nova:129"]).toEqual(-3);
+        expect(late.legalRecord["nova:130"]).toEqual(3);
     });
 
     it("auto-aborts flag 0x0001 missions with pay and datePostInc", function() {
@@ -251,11 +253,11 @@ describe("mission state machine", function() {
             const abort = abortMission(state, PENALTY_ABORT_MISSION, penalty.active!, env, {});
             expect(abort.aborted).toBeTrue();
             // Flag 0x0040: -5x CompReward with the completion govt,
-            // propagated (Ally Govt hears the same, Polaris the opposite).
+            // propagated at half-delta (Ally Govt -250, Polaris +250).
             expect(state.credits).toEqual(25000);
             expect(state.legalRecord["nova:128"]).toEqual(-500);
-            expect(state.legalRecord["nova:129"]).toEqual(-500);
-            expect(state.legalRecord["nova:130"]).toEqual(500);
+            expect(state.legalRecord["nova:129"]).toEqual(-250);
+            expect(state.legalRecord["nova:130"]).toEqual(250);
             expect(abort.effects).toContain(jasmine.objectContaining(
                 { kind: "record", govt: "nova:128", delta: -500 }));
             // Flag 0x0008's 100 fuel is "upon auto-abort" (Bible): a

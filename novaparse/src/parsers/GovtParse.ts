@@ -21,6 +21,10 @@ export async function GovtParse(govt: GovtResource, notFoundFunction: (m: string
         },
         initialRec: govt.initialRec,
         maxOdds: govt.maxOdds,
+        // The runtime govt-table byte +0x83 (FUN_0046d4b0): set from
+        // stellar/spöb action fields the port does not parse, so stock data
+        // is 0; plugins may override.
+        noAttackPlayer: 0,
         classes: govt.classes,
         allies: govt.allies,
         enemies: govt.enemies,

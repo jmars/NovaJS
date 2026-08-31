@@ -82,6 +82,10 @@ export const SYSTEMS = new Map<string, SystemData>([
         ["nova:140", "nova:150", "nova:170"])],
     ["nova:302", makeSystem("nova:302", ["nova:301"], ["nova:128", "nova:408"])],
     ["nova:303", makeSystem("nova:303", [], ["nova:160"])],
+    // A Polaris-owned system, so player-targeting specs can exercise the
+    // per-system legal record (DAT_00733bc8[sys] ≡ legalRecord[govt of sys]).
+    ["nova:304", { ...makeSystem("nova:304", [], ["nova:130"]),
+        government: "nova:130" }],
 ]);
 
 export const GOVERNMENTS = new Map<string, GovernmentData>([

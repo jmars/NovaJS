@@ -31,7 +31,9 @@ import { DamagedEvent } from "./death_plugin";
 import { OwnerComponent } from "./fire_weapon_plugin";
 import { GameDataResource } from "./game_data_resource";
 import { ArmorComponent, ShieldComponent } from "./health_plugin";
-import { FollowAI, GovernmentComponent, playerIsHostile,
+import { govtsAllied, govtsHostile, playerIsLegalTarget,
+    playerTargetVetoed } from "./player_hostility";
+import { FollowAI, GovernmentComponent,
     ShootAllWeaponsAI } from "./npc_plugin";
 import { PlayerShipSelector } from "./player_ship_plugin";
 import { PlanetComponent, PlanetDataComponent } from "./planet_plugin";
@@ -78,40 +80,6 @@ function isDeadInSpace(armor: Stat | undefined,
         return false;
     }
     return (armor?.current ?? 0) <= 0 && (shield?.current ?? 0) <= 0;
-}
-
-// FUN_0046bc90: same government counts as allied, otherwise either side
-// must list one of the other's classes as an ally.
-function govtsAllied(mine: GovernmentData | null,
-    theirs: GovernmentData | null, mineId: string | null | undefined,
-    theirsId: string | null | undefined): boolean {
-    if (mineId != null && mineId === theirsId) {
-        return true;
-    }
-    if (!mine || !theirs) {
-        return false;
-    }
-    return govtsAreAllies(mine, theirs) || govtsAreAllies(theirs, mine);
-}
-
-// FUN_0046bdf0: mutual enemies (either direction), skipped when either
-// government is derelict (flag 0x800), or xenophobia (flag 0x1) from
-// either side against a non-allied government. Both governments must be
-// resolved — independent ships are nobody's enemy.
-function govtsHostile(mine: GovernmentData | null,
-    theirs: GovernmentData | null, mineId: string | null | undefined,
-    theirsId: string | null | undefined): boolean {
-    if (!mine || !theirs) {
-        return false;
-    }
-    if (((mine.flags & 0x800) | (theirs.flags & 0x800)) !== 0) {
-        return false;
-    }
-    if (govtsAreEnemies(mine, theirs) || govtsAreEnemies(theirs, mine)) {
-        return true;
-    }
-    const xenophobic = ((mine.flags & 0x1) | (theirs.flags & 0x1)) !== 0;
-    return xenophobic && !govtsAllied(mine, theirs, mineId, theirsId);
 }
 
 // FUN_00411800: the group strength the acquisition odds filter weighs
@@ -267,9 +235,10 @@ export const AggroRangeSystem = new System({
 
         const env = world.resources.get(MissionEnvResource);
         const mine = env?.government(govt?.id ?? null) ?? null;
-        // govt MaxOdds is the raw 100 = 1:1 value (Bible): a candidate is
-        // dropped when its strength exceeds mine × maxOdds/100.
-        const oddsScale = (mine?.maxOdds ?? 100) / 100;
+        // govt MaxOdds is the raw per-mille gövt value (+0x60): a candidate
+        // is dropped when its strength exceeds mine × maxOdds/1000
+        // (stock 250 → ×0.25).
+        const oddsScale = (mine?.maxOdds ?? 1000) / 1000;
         const myStrength = strengthOf(uuid, entities, world);
 
         let best: string | undefined;
@@ -318,7 +287,7 @@ export const AggroRangeSystem = new System({
                 }
                 const victim = entities.get(theirTarget);
                 if (victim?.components.has(PlayerShipSelector)
-                    && !playerIsHostile(govt?.id, world)) {
+                    && !playerIsLegalTarget(govt?.id, world)) {
                     continue;
                 }
                 target.target = theirTarget;
@@ -328,11 +297,13 @@ export const AggroRangeSystem = new System({
 
         // Pass 2: the player as a candidate — inside the aggress square
         // (aggress × 600 per axis), my govt lacks the never-attacks-player
-        // flag 0x40, and the player is hostile to my government.
+        // flag 0x40 and the attack-player veto bytes, and the player is a
+        // legal target of my government (per-system record case table).
         const [playerUuid, playerMovement] = players[0] ?? [];
         if (playerUuid !== undefined && playerUuid !== uuid
             && ((mine?.flags ?? 0) & 0x40) === 0
-            && playerIsHostile(govt?.id, world)) {
+            && !playerTargetVetoed(govt?.id, world)
+            && playerIsLegalTarget(govt?.id, world)) {
             const dx = Math.abs(playerMovement.position.x - movement.position.x);
             const dy = Math.abs(playerMovement.position.y - movement.position.y);
             const reach = config.aggress * 600;

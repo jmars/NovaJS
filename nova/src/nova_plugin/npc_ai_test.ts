@@ -85,6 +85,9 @@ function makeWorld(envOverrides: Partial<MissionEnv> = {}): World {
     world.resources.set(GameDataResource, gameData);
     world.resources.set(MissionEnvResource,
         { ...makeTestEnv().env, ...envOverrides });
+    // The player-targeting specs exercise the per-system legal record, so
+    // the default world sits in the Polaris-owned system (nova:304).
+    world.resources.set(SystemIdResource, "nova:304");
     world.addPlugin(NpcAIPlugin);
     return world;
 }
@@ -546,7 +549,8 @@ describe("düde AIType behaviors", () => {
             world.step();
 
             // No radius on NPC-vs-NPC acquisition: equal strength passes
-            // the odds filter (maxOdds 100 = 1:1) at any distance.
+            // the odds filter (maxOdds 1000 = 1:1 per-mille) at any
+            // distance.
             expect(npc.components.get(TargetComponent)!.target)
                 .toEqual(enemy.uuid);
         });
@@ -557,16 +561,17 @@ describe("düde AIType behaviors", () => {
         const npc = addEntity(world, "npc",
             makeAiShip({ ...TRADER_DUDE, aiType: 3 }, [0, 0]));
         pinAggress(npc, 1);
-        // Strength 1000 vs my 100: 1000 > 100 × maxOdds 100/100 → dropped.
+        // Strength 1000 vs my 100: 1000 > 100 × maxOdds 1000/1000 →
+        // dropped.
         addGovtShip(world, "strong", "nova:128", [500, 0], STRONG_SHIP);
         world.step();
         expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
 
-        // Raising the government's MaxOdds to 1000 admits the same enemy:
-        // 1000 ≤ 100 × 1000/100.
+        // Raising the government's MaxOdds to 10000 admits the same enemy:
+        // 1000 ≤ 100 × 10000/1000 (10:1 odds).
         const brave = makeWorld({
             government: id => id === "nova:130"
-                ? { ...base.env.government("nova:130")!, maxOdds: 1000 }
+                ? { ...base.env.government("nova:130")!, maxOdds: 10000 }
                 : base.env.government(id),
         });
         const braverNpc = addEntity(brave, "npc",
@@ -605,7 +610,7 @@ describe("düde AIType behaviors", () => {
         ally.components.set(TargetComponent, { target: victim.uuid });
         world.step();
 
-        // Strength 1000 > 100 × 1: the assist is refused.
+        // Strength 1000 > 100 × 1000/1000: the assist is refused.
         expect(npc.components.get(TargetComponent)!.target).toBeUndefined();
     });
 

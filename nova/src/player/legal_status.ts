@@ -52,6 +52,23 @@ export function govtsAreClassmates(a: GovernmentData, b: GovernmentData): boolea
 }
 
 
+// --- reading the record ---
+
+/**
+ * The record the acquisition/scan gates compare: the binary stores the
+ * legal record PER SYSTEM (DAT_00733bc8[sysIdx], indexed by the current
+ * system, FUN_0040e020 pass 2) and the mission appliers update every
+ * system by its government, so the port's per-government record IS the
+ * record of a system: DAT_00733bc8[sys] ≡ legalRecord[govt of sys].
+ * Reads must therefore key on the system's government (never the reader's
+ * own government). Systems without a government have no record (0).
+ */
+export function systemLegalRecord(state: PlayerState,
+    systemGovtId: string | null | undefined): number {
+    return systemGovtId ? state.legalRecord[systemGovtId] ?? 0 : 0;
+}
+
+
 // --- record changes ---
 
 export interface GovtGraph {
@@ -73,13 +90,50 @@ export interface RecordChange {
     propagated: boolean;
 }
 
+// FUN_0046bc90: the ALLIED test the record applier uses. The same
+// government counts as allied; either side carrying the derelict bit
+// (0x800) breaks the alliance; otherwise either side must list one of the
+// other's classes as an ally.
+export function govtsAlliedPerBinary(a: GovernmentData,
+    b: GovernmentData): boolean {
+    if ((a.flags & 0x800) !== 0 || (b.flags & 0x800) !== 0) {
+        return false;
+    }
+    return govtsAreAllies(a, b) || govtsAreAllies(b, a);
+}
+
+// FUN_0046bdf0: the AT-WAR test the record applier uses. Derelict
+// governments (0x800) are at war with nobody; declared enemies either
+// direction are at war; so are xenophobic governments (flag 0x1 on either
+// side) with everyone they are not allied with.
+export function govtsAtWarPerBinary(a: GovernmentData,
+    b: GovernmentData): boolean {
+    if ((a.flags & 0x800) !== 0 || (b.flags & 0x800) !== 0) {
+        return false;
+    }
+    if (govtsAreEnemies(a, b) || govtsAreEnemies(b, a)) {
+        return true;
+    }
+    const xenophobic = ((a.flags & 0x1) | (b.flags & 0x1)) !== 0;
+    return xenophobic && !govtsAlliedPerBinary(a, b);
+}
+
+// The mission applier (FUN_00440410) moves allied and at-war records by
+// half the delta, rounded half away from zero (the 0.5 constant at
+// DAT_00575500; ROUND(x)+carry for the .5 fraction).
+function halfDelta(delta: number): number {
+    return delta < 0 ? -Math.round(-delta / 2) : Math.round(delta / 2);
+}
+
 /**
  * Applies one act for (+) or against (-) `govtId` to the pilot's legal
- * record, with propagation: the govt's allies hear the same delta and its
- * enemies hear the opposite. Enemies take precedence over allies when a
- * govt is both. Returns every change applied, primary first; a zero delta
- * or an unknown government (warned, fail-closed) applies nothing. A
- * negative delta is a crime, so affiliated 0x0040 ranks are stripped.
+ * record, with propagation (FUN_00440410 semantics, per-govt): govts at
+ * war with the target hear the opposite half-delta, allied govts the same
+ * half-delta; derelict govts (0x800) hear nothing, and xenophobia (0x1)
+ * counts as war against non-allies. War takes precedence over alliance.
+ * Returns every change applied, primary first; a zero delta or an unknown
+ * government (warned, fail-closed) applies nothing. A negative delta is a
+ * crime, so affiliated 0x0040 ranks are stripped.
  */
 export function changeRecord(state: PlayerState, govtId: string, delta: number,
     env: LegalEnv): RecordChange[] {
@@ -97,11 +151,14 @@ export function changeRecord(state: PlayerState, govtId: string, delta: number,
         if (govt.id === target.id) {
             continue;
         }
-        if (govtsAreEnemies(govt, target) || govtsAreEnemies(target, govt)) {
-            changes.push({ govt: govt.id, delta: -delta, propagated: true });
+        if (((govt.flags & 0x800) | (target.flags & 0x800)) !== 0) {
+            continue;
         }
-        else if (govtsAreAllies(govt, target) || govtsAreAllies(target, govt)) {
-            changes.push({ govt: govt.id, delta, propagated: true });
+        if (govtsAtWarPerBinary(govt, target)) {
+            changes.push({ govt: govt.id, delta: -halfDelta(delta), propagated: true });
+        }
+        else if (govtsAlliedPerBinary(govt, target)) {
+            changes.push({ govt: govt.id, delta: halfDelta(delta), propagated: true });
         }
     }
     for (const change of changes) {

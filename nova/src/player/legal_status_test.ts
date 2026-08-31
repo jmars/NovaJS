@@ -34,31 +34,32 @@ describe("legal status", function() {
 
     it("applies the delta to the target govt and propagates to allies and enemies",
         function() {
-            // A crime against the Federation: Ally Govt hears the same,
-            // Polaris the opposite.
+            // A crime against the Federation (delta -10): the target hears
+            // it in full; Ally Govt hears the same half-delta (-5) and
+            // Polaris (at war) the opposite half-delta (+5) — FUN_00440410.
             const changes = changeRecord(state, "nova:128", -10, env);
             expect(changes).toEqual([
                 { govt: "nova:128", delta: -10, propagated: false },
-                { govt: "nova:129", delta: -10, propagated: true },
-                { govt: "nova:130", delta: 10, propagated: true },
+                { govt: "nova:129", delta: -5, propagated: true },
+                { govt: "nova:130", delta: 5, propagated: true },
             ]);
             expect(state.legalRecord["nova:128"]).toEqual(-10);
-            expect(state.legalRecord["nova:129"]).toEqual(-10);
-            expect(state.legalRecord["nova:130"]).toEqual(10);
+            expect(state.legalRecord["nova:129"]).toEqual(-5);
+            expect(state.legalRecord["nova:130"]).toEqual(5);
         });
 
     it("hears enemies in both directions; classmates hear nothing", function() {
         // Polaris has the Vell-os class (1) in its enemies list, so a good
-        // deed for Vell-os worsens the Polaris record. The Federation only
-        // shares Vell-os's class: a classmate is not an ally, and hears
-        // nothing.
+        // deed for Vell-os worsens the Polaris record by half the delta
+        // (-round(5/2) = -3). The Federation only shares Vell-os's class: a
+        // classmate is not an ally, and hears nothing.
         const changes = changeRecord(state, "nova:136", 5, env);
         expect(changes).toEqual([
             { govt: "nova:136", delta: 5, propagated: false },
-            { govt: "nova:130", delta: -5, propagated: true },
+            { govt: "nova:130", delta: -3, propagated: true },
         ]);
         expect(state.legalRecord["nova:136"]).toEqual(5);
-        expect(state.legalRecord["nova:130"]).toEqual(-5);
+        expect(state.legalRecord["nova:130"]).toEqual(-3);
         expect(state.legalRecord["nova:128"] ?? 0).toEqual(0);
     });
 
