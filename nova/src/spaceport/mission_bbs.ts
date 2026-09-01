@@ -316,6 +316,8 @@ export class MissionBBS extends Menu<void> {
     private acceptButton?: Button;
     private refuseButton?: Button;
     private selected?: MissionOffer;
+    private currentOffers: MissionOffer[] = [];
+    private currentIndex = -1;
     // Resolves a decision: null = Done/leave, { offer, accepted } = that
     // mission was accepted or refused.
     private decided = new Subject<{ offer: MissionOffer, accepted: boolean }
@@ -344,6 +346,8 @@ export class MissionBBS extends Menu<void> {
         this.addButtons({ done: this.doneButton });
         this.controls.controls = {
             depart: () => this.decided.next(null),
+            up: () => this.navigate(-1),
+            down: () => this.navigate(1),
         };
 
         this.container.addChild(this.listContainer);
@@ -417,8 +421,10 @@ export class MissionBBS extends Menu<void> {
 
         // The mission computer shows the chosen mission's picture + brief in
         // the panel, with Accept/Refuse at the bottom — no separate dialog.
+        this.currentOffers = remaining;
         this.drawList(remaining);
         if (remaining.length > 0) {
+            this.currentIndex = 0;
             await this.select(remaining[0]);
         }
 
@@ -447,15 +453,32 @@ export class MissionBBS extends Menu<void> {
                 }
             }
             if (redraw) {
+                this.currentOffers = remaining;
                 this.drawList(remaining);
                 redraw = false;
             }
             if (remaining.length > 0 && this.selected !== remaining[0]) {
+                this.currentIndex = 0;
                 await this.select(remaining[0]);
             }
         }
         this.controls.unbind();
         this.container.visible = false;
+    }
+
+    // Keyboard up/down moves the highlight through the offers, repainting the
+    // preview (the binary navigates the mission computer with the arrow keys).
+    private async navigate(dir: number): Promise<void> {
+        if (this.currentOffers.length === 0) {
+            return;
+        }
+        const next = Math.max(0, Math.min(this.currentOffers.length - 1,
+            this.currentIndex + dir));
+        if (next === this.currentIndex) {
+            return;
+        }
+        this.currentIndex = next;
+        await this.select(this.currentOffers[next]);
     }
 
     // Selects `offer` as the highlighted mission and repaints its in-panel
@@ -583,10 +606,9 @@ export class MissionBBS extends Menu<void> {
             const entry = new PIXI.Text(offer.listText, FONT.entry);
             entry.position.x = BBS_LIST_POS.x;
             entry.position.y = y;
+            // Explicit hit box + pointerdown (like the Button class) so the
+            // mission entry is reliably clickable.
             entry.interactive = true;
-            // An explicit hit box (the text may be narrower than the box) so
-            // pointerdown hit-tests reliably; pointerdown is used because
-            // PIXI pointertap can miss a real mouse click.
             entry.hitArea = new PIXI.Rectangle(0, 0, 300, 22);
             entry.on('pointerdown', () => { this.select(offer).catch(
                 (e) => console.warn('[bbs] select failed', e)); });
