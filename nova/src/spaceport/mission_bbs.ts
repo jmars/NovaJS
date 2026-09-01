@@ -31,7 +31,7 @@ import { queuePlayerStateSave } from '../missions/mission_plugin';
 import { rawIdOf } from '../missions/stellar_filter';
 import { Button } from './button';
 import {
-    BriefingDialog, BriefingInput, ButtonLabels, BBS_DONE_POS, BBS_LIST_POS,
+    BriefingDialog, BriefingInput, ButtonLabels, BBS_LIST_POS,
     BBS_PICT_POS, BBS_BUTTON_X, BBS_ACCEPT_Y, BBS_REFUSE_Y,
     BBS_LONE_BUTTON_Y, GameMissionTextEnv, TextDialog,
 } from './briefing';
@@ -335,12 +335,16 @@ export class MissionBBS extends Menu<void> {
         super(gameData, backdrop, controlEvents);
         this.container.name = 'MissionBBS';
 
-        // Done sits in the button box of the panel (see briefing.ts
-        // for the backdrop geometry).
+        // Accept/Refuse live in the button box (bottom-right); the Done
+        // (leave) button sits below the list at the panel's bottom-left so
+        // the three never overlap, and the depart key leaves too.
         this.doneButton = new Button(gameData, "Done", 100,
-            { x: BBS_DONE_POS.x, y: BBS_DONE_POS.y });
+            { x: BBS_LIST_POS.x, y: 135 });
         this.doneButton.click.subscribe(() => this.decided.next(null));
         this.addButtons({ done: this.doneButton });
+        this.controls.controls = {
+            depart: () => this.decided.next(null),
+        };
 
         this.container.addChild(this.listContainer);
         this.previewPict.position.x = BBS_PICT_POS.x;
@@ -581,7 +585,8 @@ export class MissionBBS extends Menu<void> {
             entry.position.y = y;
             entry.interactive = true;
             entry.cursor = 'pointer';
-            entry.on('pointertap', () => { this.select(offer); });
+            entry.on('pointertap', () => { this.select(offer).catch(
+                (e) => console.warn('[bbs] select failed', e)); });
             this.listContainer.addChild(entry);
             y += entry.height + 8;
         }
