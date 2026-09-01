@@ -28,7 +28,10 @@ describe("DescResource", function() {
         expect(d1.text).toEqual("The first description has one line of text that you can read.");
         expect(d2.text).toEqual("This one has a graphic.");
     });
-    // it("Should parse graphic", function() {
-    //     expect(d2.graphic).to.equal(4214);
-    // });
+    it("Should parse the graphic after the null terminator", function() {
+        // d2's text ends at byte 23; the uint16 immediately after is the
+        // PICT id 4214 (a text-only desc reads 0).
+        expect(d2.graphic).toEqual(4214);
+        expect(d1.graphic).toEqual(0);
+    });
 });

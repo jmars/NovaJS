@@ -4,11 +4,14 @@ import { Resource } from "resource_fork";
 import { decodeMacRoman, readPascalString } from "./mac_roman";
 
 // A dësc resource is a null-terminated MacRoman description text followed
-// by a short tail: a 2-byte PICT id (the item's portrait) and zero padding.
-// The tail is NOT a fixed 133 bytes — stock dësc carry just the 2-byte
-// graphic id then zeros (verified: ship 128's dësc = 374 text bytes, a
-// uint16 graphic 20128, then 34 zero bytes). The text must be read up to
-// its null terminator, never to byteLength - a fixed tail.
+// by a short tail: a 2-byte PICT id (the item's portrait / mission brief
+// graphic) and zero padding. The tail is NOT a fixed 133 bytes — stock dësc
+// carry just the 2-byte graphic id then zeros (verified: ship 128's dësc =
+// 374 text bytes, a uint16 graphic 20128, then 34 zero bytes; the test
+// fixture desc 129 = "This one has a graphic." then uint16 4214). The text
+// must be read up to its null terminator, never to byteLength - a fixed
+// tail, and the graphic is the uint16 immediately after the null (when two
+// bytes follow it).
 
 class DescResource extends BaseResource {
     graphic: number;
@@ -22,8 +25,9 @@ class DescResource extends BaseResource {
         // The text is a null-terminated C string from the start of the
         // resource. After its terminator sit the tail fields: a 2-byte
         // PICT id, an optional Pascal movie-file name and a flags word,
-        // then padding. Only read the tail when the resource is actually
-        // long enough for it; otherwise the whole resource is the text.
+        // then padding. Read the graphic whenever two bytes follow the
+        // null; read the movie/flags tail only when the resource is long
+        // enough for it.
         var textEnd = 0;
         for (var i = 0; i < d.byteLength; i += 1) {
             if (d.getUint8(i) === 0) {
@@ -31,7 +35,7 @@ class DescResource extends BaseResource {
                 break;
             }
         }
-        this.graphic = textEnd + 2 + 129 <= d.byteLength
+        this.graphic = textEnd + 2 <= d.byteLength
             ? d.getUint16(textEnd + 1) : 0;
         if (textEnd + 2 + 129 + 2 <= d.byteLength) {
             var movie = readPascalString(d, textEnd + 1 + 2);
