@@ -711,6 +711,14 @@ function faceAndThrust(movement: MovementState, face: Angle,
 // (the caller then skips its far-field pursuit).
 const APPROACH_STOP = 200;
 
+// FUN_00408150 only brakes when the ship is NOT already heading at the
+// destination: it compares the (negated) velocity direction against the
+// from-destination-to-ship direction and brakes only when they differ by
+// more than 0xf of FUN_004619b0's 1024-unit angle (≈5.3°). A ship already
+// aligned with the spöb keeps thrusting into it instead of being braked
+// into a perpetual orbit (the "NPC spins before docking" bug).
+const BRAKE_HEADING_TOLERANCE = 0xf * (2 * Math.PI / 0x400);
+
 function approachStop(movement: MovementState, destMovement: MovementState,
     physics: MovementPhysics | undefined, time: Time): boolean {
     const dx = destMovement.position.x - movement.position.x;
@@ -721,14 +729,21 @@ function approachStop(movement: MovementState, destMovement: MovementState,
     // Substate 9 thrusts free (the per-component cap is maxVelocity).
     movement.targetSpeed = 0;
     const relVel = movement.velocity.subtract(destMovement.velocity);
+    const toDest = destMovement.position.subtract(movement.position).angle;
+    // Heading aligned with the destination: thrust into it (no brake), as
+    // the binary's angle-gated substate 9 does. Only a misaligned approach
+    // brakes against its residual velocity.
+    if (Math.abs(relVel.angle.distanceTo(toDest).angle)
+        <= BRAKE_HEADING_TOLERANCE) {
+        faceAndThrust(movement, toDest, physics, time);
+        return true;
+    }
     if (Math.abs(relVel.x) >= BRAKE_SPEED
         || Math.abs(relVel.y) >= BRAKE_SPEED) {
         faceAndThrust(movement, relVel.angle.add(Math.PI), physics, time);
     }
     else {
-        faceAndThrust(movement,
-            destMovement.position.subtract(movement.position).angle,
-            physics, time);
+        faceAndThrust(movement, toDest, physics, time);
     }
     return true;
 }

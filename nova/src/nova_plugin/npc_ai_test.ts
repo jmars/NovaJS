@@ -224,7 +224,7 @@ describe("düde AIType behaviors", () => {
         expect(movement.accelerating).toEqual(1);
     });
 
-    it("brakes against its residual velocity inside the spöb approach square",
+    it("thrusts an aligned approach into the spöb and brakes a misaligned one",
         () => {
             const world = makeWorld();
             const planet = addEntity(world, "planet",
@@ -236,22 +236,34 @@ describe("düde AIType behaviors", () => {
                 .toEqual(planet.uuid);
             const movement = npc.components.get(MovementStateComponent)!;
 
-            // Inside the 200px approach square (DAT_00575160) with
-            // residual velocity toward the spöb: substate 9 faces against
-            // the relative velocity (west, retrograde of the eastbound
-            // drift).
+            // Inside the 200px approach square (DAT_00575160), heading AT
+            // the spöb (velocity east, dest east): FUN_00408150's
+            // angle-gated substate 9 does NOT brake an aligned approach —
+            // it keeps thrusting into the spöb (the port's fix for the
+            // "NPC spins before docking" orbit).
             movement.velocity = new Vector(300, 0);
-            movement.rotation = new Angle(Math.PI / 2);
+            movement.rotation = new Angle(Math.PI / 2);   // already facing east
             world.step();
             expect(movement.turnTo instanceof Angle).toBeTrue();
             const face = movement.turnTo as Angle;
-            expect(face.angle).toBeCloseTo(new Angle(-Math.PI / 2).angle);
+            expect(face.angle).toBeCloseTo(new Angle(Math.PI / 2).angle);
+            expect(movement.accelerating).toEqual(1);
+
+            // Misaligned approach (velocity north, dest east): substate 9
+            // brakes against the residual — faces opposite the northward
+            // drift (south, engine angle 0).
+            movement.velocity = new Vector(0, 300);
+            movement.rotation = new Angle(Math.PI / 2);
+            world.step();
+            expect(movement.turnTo instanceof Angle).toBeTrue();
+            const brakeFace = movement.turnTo as Angle;
+            expect(brakeFace.angle).toBeCloseTo(new Angle(0).angle);
             // The misaligned facing gets no brake thrust yet (the
             // binary's turnRate + 1.0 alignment gate).
             expect(movement.accelerating).toEqual(0);
 
             // Aligned: the brake thrusts against the residual.
-            movement.rotation = face;
+            movement.rotation = brakeFace;
             world.step();
             expect(movement.accelerating).toEqual(1);
 
