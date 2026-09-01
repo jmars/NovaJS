@@ -30,7 +30,11 @@ import { activeRankContributes } from '../player/ranks';
 import { queuePlayerStateSave } from '../missions/mission_plugin';
 import { rawIdOf } from '../missions/stellar_filter';
 import { Button } from './button';
-import { BriefingDialog, BriefingInput, ButtonLabels, BBS_DONE_POS, BBS_LIST_POS, GameMissionTextEnv, TextDialog } from './briefing';
+import {
+    BriefingDialog, BriefingInput, ButtonLabels, BBS_DONE_POS, BBS_LIST_POS,
+    BBS_PICT_POS, BBS_BUTTON_X, BBS_ACCEPT_Y, BBS_REFUSE_Y,
+    BBS_LONE_BUTTON_Y, GameMissionTextEnv, TextDialog,
+} from './briefing';
 import { Menu } from './menu';
 import {
     expandMissionText,
@@ -298,9 +302,21 @@ export class MissionBBS extends Menu<void> {
     protected listContainer = new PIXI.Container();
     private briefing: BriefingDialog;
     private messageDialog: TextDialog;
-    private picked = new Subject<MissionOffer | null>();
     private doneButton: Button;
     private strings2002: Promise<StringSetData | null>;
+    // The selected mission's in-panel preview (the binary's mission computer
+    // shows the chosen mission's picture + Accept/Refuse in the panel, not a
+    // separate dialog): a pict in the top-right box, its brief text, and the
+    // Accept/Refuse buttons in the bottom-right box.
+    private previewPict = new PIXI.Container();
+    private previewText = new PIXI.Text("", FONT.entry);
+    private acceptButton?: Button;
+    private refuseButton?: Button;
+    private selected?: MissionOffer;
+    // Resolves a decision: null = Done/leave, { offer, accepted } = that
+    // mission was accepted or refused.
+    private decided = new Subject<{ offer: MissionOffer, accepted: boolean }
+        | null>();
 
     // The queue this UI pops from: the BBS lists AvailLoc 0; the bar
     // overrides to "bar" (the shared not-BBS queue, re-filtered to 1).
@@ -320,10 +336,20 @@ export class MissionBBS extends Menu<void> {
         // for the backdrop geometry).
         this.doneButton = new Button(gameData, "Done", 100,
             { x: BBS_DONE_POS.x, y: BBS_DONE_POS.y });
-        this.doneButton.click.subscribe(() => this.picked.next(null));
+        this.doneButton.click.subscribe(() => this.decided.next(null));
         this.addButtons({ done: this.doneButton });
 
         this.container.addChild(this.listContainer);
+        this.previewPict.position.x = BBS_PICT_POS.x;
+        this.previewPict.position.y = BBS_PICT_POS.y;
+        this.container.addChild(this.previewPict);
+        // The selected mission's brief text fills the panel's middle box
+        // (between the list and the pict).
+        this.previewText.position.x = BBS_LIST_POS.x + 320;
+        this.previewText.position.y = BBS_LIST_POS.y;
+        this.previewText.style.wordWrapWidth = 210;
+        this.container.addChild(this.previewText);
+
         this.briefing = new BriefingDialog(gameData, controlEvents);
         this.container.addChild(this.briefing.container);
         this.messageDialog = new TextDialog(gameData, controlEvents);
@@ -353,24 +379,24 @@ export class MissionBBS extends Menu<void> {
             return;
         }
 
-        let redraw = true;
+        // The mission computer shows the chosen mission's picture + brief in
+        // the panel, with Accept/Refuse at the bottom — no separate dialog.
+        this.drawList(remaining);
+        if (remaining.length > 0) {
+            await this.select(remaining[0]);
+        }
+
+        let redraw = false;
         while (remaining.length > 0) {
-            if (redraw) {
-                this.drawList(remaining);
-                redraw = false;
+            const decision = await firstValueFrom(this.decided);
+            if (!decision) {
+                break;   // Done / leave
             }
-            const picked = await firstValueFrom(this.picked);
-            if (!picked) {
-                break;
-            }
-            const labels = await this.briefing.labelsFor(picked.mission);
-            this.controls.unbind();
-            const result = await this.briefing.show(briefingInput(picked, labels));
-            this.controls.bind();
-            if (result.accepted) {
+            const { offer, accepted } = decision;
+            if (accepted) {
                 const ui = await this.makeUi();
-                logEffects(acceptOffer(ui, picked));
-                remaining = remaining.filter(offer => offer !== picked);
+                logEffects(acceptOffer(ui, offer));
+                remaining = remaining.filter(o => o !== offer);
                 // FUN_0043f100 re-filters the board after every accept:
                 // missions that no longer pass availability (an acceptance
                 // can flip set-bits or consume the last slot) are dropped.
@@ -378,15 +404,74 @@ export class MissionBBS extends Menu<void> {
                 redraw = true;
             }
             else {
-                const effects = refuseOffer(await this.makeUi(), picked);
+                const effects = refuseOffer(await this.makeUi(), offer);
                 logEffects(effects);
                 if (onRefused) {
-                    await onRefused(picked, effects);
+                    await onRefused(offer, effects);
                 }
+            }
+            if (redraw) {
+                this.drawList(remaining);
+                redraw = false;
+            }
+            if (remaining.length > 0 && this.selected !== remaining[0]) {
+                await this.select(remaining[0]);
             }
         }
         this.controls.unbind();
         this.container.visible = false;
+    }
+
+    // Selects `offer` as the highlighted mission and repaints its in-panel
+    // preview: picture (top-right box), brief text, and Accept/Refuse
+    // buttons. The buttons reuse the briefing's per-mission labels.
+    protected async select(offer: MissionOffer): Promise<void> {
+        this.selected = offer;
+        this.previewText.text = offer.briefText;
+        this.previewPict.children.length = 0;
+        // Desc graphic ids below 128 mean "no graphic" (stock convention).
+        if (offer.graphic >= 128) {
+            try {
+                this.previewPict.addChild(await this.gameData
+                    .spriteFromPictAsync(`nova:${offer.graphic}`));
+            }
+            catch {
+                // A missing pict renders blank rather than rejecting.
+            }
+        }
+        await this.setAcceptRefuse(offer);
+    }
+
+    // The Accept/Refuse buttons for `offer`, rebuilt per mission (labels can
+    // be mission-specific; 0x0004 missions cannot be refused).
+    private async setAcceptRefuse(offer: MissionOffer): Promise<void> {
+        const labels = await this.briefing.labelsFor(offer.mission);
+        if (this.acceptButton) {
+            this.container.removeChild(this.acceptButton.container);
+        }
+        if (this.refuseButton) {
+            this.container.removeChild(this.refuseButton.container);
+        }
+        const canRefuse = (offer.mission.flags & 0x0004) === 0;
+        this.acceptButton = new Button(this.gameData, labels.accept, 100,
+            { x: BBS_BUTTON_X,
+                y: canRefuse ? BBS_ACCEPT_Y : BBS_LONE_BUTTON_Y });
+        this.refuseButton = canRefuse
+            ? new Button(this.gameData, labels.refuse, 100,
+                { x: BBS_BUTTON_X, y: BBS_REFUSE_Y })
+            : undefined;
+        this.acceptButton.click.subscribe(() =>
+            this.decided.next({ offer, accepted: true }));
+        if (this.refuseButton) {
+            this.refuseButton.click.subscribe(() =>
+                this.decided.next({ offer, accepted: false }));
+        }
+        this.addButtons({
+            accept: this.acceptButton,
+            ...(this.refuseButton ? { refuse: this.refuseButton } : {}),
+        });
+        await Promise.all([this.acceptButton.buildPromise,
+            this.refuseButton?.buildPromise]);
     }
 
     // Shows the STR# 2002 busy/empty message instead of the list when
@@ -444,6 +529,7 @@ export class MissionBBS extends Menu<void> {
 
     // The offer entries, from startY down. Split from drawList so subclasses
     // can decorate the box (the bar's welcome text) and reuse the layout.
+    // Clicking an entry selects it, repainting the in-panel preview.
     protected drawEntries(offers: MissionOffer[], startY: number) {
         let y = startY;
         for (const offer of offers) {
@@ -452,13 +538,9 @@ export class MissionBBS extends Menu<void> {
             entry.position.y = y;
             entry.interactive = true;
             entry.cursor = 'pointer';
-            entry.on('pointertap', () => this.pick(offer));
+            entry.on('pointertap', () => { this.select(offer); });
             this.listContainer.addChild(entry);
             y += entry.height + 8;
         }
-    }
-
-    protected pick(offer: MissionOffer | null) {
-        this.picked.next(offer);
     }
 }

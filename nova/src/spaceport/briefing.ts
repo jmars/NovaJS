@@ -49,6 +49,15 @@ const ACCEPT_Y = 64;
 const REFUSE_Y = 103;
 const LONE_BUTTON_Y = 89; // a single button, centered in the button box
 
+// The BBS shares the backdrop: its list draws in the text box, the selected
+// mission's picture in the pict box, and Accept/Refuse in the button box —
+// matching the binary's in-panel mission computer (not a separate dialog).
+export const BBS_PICT_POS = PICT_POS;
+export const BBS_BUTTON_X = BUTTON_X;
+export const BBS_ACCEPT_Y = ACCEPT_Y;
+export const BBS_REFUSE_Y = REFUSE_Y;
+export const BBS_LONE_BUTTON_Y = LONE_BUTTON_Y;
+
 // The Mission BBS shares the same backdrop: its list draws in the text box
 // and its Done button sits in the button box.
 export const BBS_LIST_POS = TEXT_POS;
