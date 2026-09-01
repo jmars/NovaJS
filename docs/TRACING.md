@@ -60,17 +60,22 @@ The flët contribution uses a single representative escort config (the model
 can't encode per-fleet escort tables), so it is approximate; the dûde +
 peripheral + pers parts are exact.
 
-### Phase C — extend the pattern to more functions (roadmap)
+### Phase C — extend the pattern to more functions
 
-Apply the same Ghidra-derived reference model + headless driver + LCG/output
-comparison to other ported subsystems, in priority order (value × tractability):
+Combat damage is done first (highest value × tractability):
 
-1. **Combat damage** — `weapon_plugin` / `beam_plugin` / `blast_plugin`: weapon
-   hit variance, shield-vs-armor routing, resistance, beam per-tick decay,
-   square-blast range falloff. RNG-driven, numeric, high impact. **Next.**
+1. **Combat damage** (done) — `combat_damage_model.ts` + `combat_damage_trace_test.ts`
+   reference-model the damage application (shield→armor routing, point-defense
+   scaling, pass-through) and beam decay, and sweep the port's real systems
+   against them. EV Nova combat has **no damage-variance LCG roll**, so this is
+   a numeric-output comparison (shield/armor deltas), not a draw-sequence
+   fingerprint.
+
 2. **Flight physics** — `movement_plugin`: global drag, per-component thrust
-   clamp, arrival brake. Deterministic (no LCG) — compare numeric trajectories.
+   clamp, arrival brake. Deterministic — compare numeric trajectories.
+
 3. **Combat rating / ranks** — `combat_rating_plugin`: deterministic thresholds.
+
 4. **NPC AI decisions** — aggress / target / retaliate / flee. Most faithful but
    also most stateful and complex; deferred.
 
@@ -91,4 +96,4 @@ comparison to other ported subsystems, in priority order (value × tractability)
 
 - Phase A: done
 - Phase B: done
-- Phase C: not started
+- Phase C: combat damage done; flight physics → rating → NPC AI not started
