@@ -584,8 +584,11 @@ export class MissionBBS extends Menu<void> {
             entry.position.x = BBS_LIST_POS.x;
             entry.position.y = y;
             entry.interactive = true;
-            entry.cursor = 'pointer';
-            entry.on('pointertap', () => { this.select(offer).catch(
+            // An explicit hit box (the text may be narrower than the box) so
+            // pointerdown hit-tests reliably; pointerdown is used because
+            // PIXI pointertap can miss a real mouse click.
+            entry.hitArea = new PIXI.Rectangle(0, 0, 300, 22);
+            entry.on('pointerdown', () => { this.select(offer).catch(
                 (e) => console.warn('[bbs] select failed', e)); });
             this.listContainer.addChild(entry);
             y += entry.height + 8;
