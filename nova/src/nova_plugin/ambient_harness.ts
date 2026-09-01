@@ -38,7 +38,7 @@ import { getDefaultShipData } from "novadatainterface/ShipData";
 import { Entity } from "nova_ecs/entity";
 import { World } from "nova_ecs/world";
 import { randInt, seedRng } from "../player/pilot_files";
-import { LandEvent } from "./planet_plugin";
+import { LandEvent, LiftoffEvent } from "./planet_plugin";
 import { MissionEnvResource } from "../missions/mission_plugin";
 import { makePlayerState, makeTestEnv, SYSTEMS } from "../missions/test_fixtures";
 import { PlayerStateResource } from "../player/player_state_component";
@@ -188,9 +188,16 @@ export async function runPort(seed: number, events: number,
             probes.push(randInt(0x8000));
         }
         // events-1 emissions after the odd frames 1..2*events-3 (see the
-        // frame protocol above).
+        // frame protocol above). The landing transition coalesces to one
+        // burst per landed period (AmbientPlugin), so each queued LandEvent
+        // is followed by a LiftoffEvent on the burst's even frame — that is
+        // the real signal that re-arms the next landing's burst.
         if (frame % 2 === 1 && frame < frames - 2) {
             world.emit(LandEvent, { id: "nova:130", uuid: "player" },
+                ["player"]);
+        }
+        if (frame % 2 === 0 && frame <= frames - 2) {
+            world.emit(LiftoffEvent, { id: "nova:130", uuid: "player" },
                 ["player"]);
         }
     }

@@ -65,15 +65,22 @@ import {
 import { makeDudeShip, weightedPick } from "./dude";
 import { GameDataResource } from "./game_data_resource";
 import { PERS_TABLE_ROLL, persActive, spawnPersShip, weaponOutfitMap } from "./pers_plugin";
-import { LandEvent } from "./planet_plugin";
+import { LandEvent, LiftoffEvent } from "./planet_plugin";
 import { ShipDataComponent } from "./ship_plugin";
 import { SystemIdResource } from "./system_id_resource";
 
 // How many population bursts are queued. 1 at world build covers the
 // jump-in (a fresh world is built per jump); the landing transition
 // queues one more (the binary's only in-flight burst).
+//
+// `landed` coalesces the landing burst: the binary runs its population
+// manager (FUN_0041af90) exactly ONCE per landing transition
+// (FUN_00457580), but a held land key can emit the LandEvent repeatedly.
+// Queueing one burst per LandEvent over-spawns (each burst spawns up to a
+// system's worth of ships), so the landing transition queues at most one
+// burst until the player lifts off again.
 export const PopulateResource =
-    new Resource<{ pending: number }>('PopulateResource');
+    new Resource<{ pending: number, landed: boolean }>('PopulateResource');
 
 // Monotonic counter for dude-ship entity keys (the binary reuses its freed
 // ship slots; the port needs unique keys).
@@ -387,7 +394,12 @@ function cullFarAmbient(runQuery: RunQueryFunction, entities: EntityMap): void {
 // never repopulate.
 function queuePopulate(world: World): void {
     const pending = world.resources.get(PopulateResource);
-    if (pending) {
+    // Coalesce: one landing burst per landed period. The binary fires
+    // FUN_0041af90 once per landing, but a held land key can re-emit
+    // LandEvent many times; queueing one burst each over-spawns the
+    // system. `landed` is cleared by LiftoffEvent.
+    if (pending && !pending.landed) {
+        pending.landed = true;
         pending.pending++;
     }
 }
@@ -401,15 +413,30 @@ const PopulateOnLandSystem = new System({
     },
 });
 
+// Liftoff re-arms the landing burst so the NEXT landing queues one again
+// (the binary repopulates at each landing transition, never while landed).
+const PopulateOnLiftoffSystem = new System({
+    name: 'PopulateOnLiftoffSystem',
+    events: [LiftoffEvent],
+    args: [LiftoffEvent, GetWorld] as const,
+    step(_event, world) {
+        const pending = world.resources.get(PopulateResource);
+        if (pending) {
+            pending.landed = false;
+        }
+    },
+});
+
 // Owns the population event: FUN_0041af90's burst, the event
 // subscriptions and the distance despawn.
 export const AmbientPlugin: Plugin = {
     name: 'AmbientPlugin',
     build(world) {
-        world.resources.set(PopulateResource, { pending: 1 });
+        world.resources.set(PopulateResource, { pending: 1, landed: false });
         world.resources.set(AmbientSeedResource, { val: false });
         world.resources.set(DudeCounterResource, { next: 0 });
         world.addSystem(PopulateSystem);
         world.addSystem(PopulateOnLandSystem);
+        world.addSystem(PopulateOnLiftoffSystem);
     },
 };

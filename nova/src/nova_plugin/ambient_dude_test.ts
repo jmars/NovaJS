@@ -380,6 +380,36 @@ describe("population-event wiring", () => {
                 expect(ambientKeys().length).toEqual(expected);
             }
         });
+
+    it("coalesces repeated LandEvents to one burst per landing (held land"
+        + " key)", async () => {
+        setSystem({ rollCount: 1, peripheralPercent: null });
+        // Every roll spawns exactly one ship whatever the routing
+        // (always-hit tables).
+        const { emit, ambientKeys, stepFrames } = await makeTestWorld(
+            makePlayerState(7), 1022, 256);
+        let expected = ambientKeys().length;
+        // A held land key can re-emit LandEvent many times in one landed
+        // period. The binary runs its population manager once per landing
+        // (FUN_0041af90 via FUN_00457580), so only ONE burst may fire until
+        // the player lifts off — queueing one burst per event over-spawns.
+        for (let i = 0; i < 20; i++) {
+            await emit(LandEvent);
+        }
+        await stepFrames(2);
+        expected += 1;
+        expect(ambientKeys().length).toEqual(expected);
+        // Liftoff re-arms the landing burst; the NEXT landing queues one
+        // more (one per landing transition, never while landed).
+        await emit(LiftoffEvent);
+        await stepFrames(2);
+        await emit(LandEvent);
+        await stepFrames(2);
+        expected += 1;
+        expect(ambientKeys().length).toEqual(expected);
+        await stepFrames(5);
+        expect(ambientKeys().length).toEqual(expected);
+    });
 });
 
 describe("sÿst Peripherals përs", () => {
