@@ -158,11 +158,14 @@ interface Item {
 const BOX_COUNT = [4, 5];
 
 // Clips a PIXI.Text to a box and makes it mouse-wheel scrollable (the BBS
-// preview, and the outfitter/shipyard item descriptions). `scroll` repositions
-// the text by `delta` pixels (positive = down), clamped to the box height;
-// pass `reset` to jump back to the top. Returns the scroll handle.
-export function makeTextScrollable(text: PIXI.Text, x: number, y: number,
-    width: number, height: number): { scroll: (delta: number, reset?: boolean) => void } {
+// preview, and the outfitter/shipyard item descriptions). The mask is added
+// to `parent` (the text's own container) so it shares the text's transform
+// space — an out-of-tree mask clips in the wrong coordinates.
+// `scroll` repositions the text by `delta` pixels (positive = down), clamped
+// to the box height; pass `reset` to jump back to the top. Returns the scroll
+// handle.
+export function makeTextScrollable(parent: PIXI.Container, text: PIXI.Text,
+    x: number, y: number, width: number, height: number): { scroll: (delta: number, reset?: boolean) => void } {
     text.position.x = x;
     text.position.y = y;
     text.style.wordWrap = true;
@@ -173,6 +176,9 @@ export function makeTextScrollable(text: PIXI.Text, x: number, y: number,
     mask.beginFill(0xffffff);
     mask.drawRect(x, y, width, height);
     mask.endFill();
+    // Stencil-only: clips the text, never paints itself.
+    mask.renderable = false;
+    parent.addChild(mask);
     text.mask = mask;
     let scroll = 0;
     const maxScroll = () => Math.max(0, text.height - height);

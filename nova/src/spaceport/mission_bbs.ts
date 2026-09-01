@@ -285,6 +285,12 @@ const FONT = {
     } as const,
 };
 
+// List-entry selection border (the outfitter ItemTile bright/dim style).
+const ENTRY_BORDER = {
+    width: 300, height: 22, lineWidth: 1,
+    dim: 0x404040, bright: 0xff0000,
+} as const;
+
 // STR# 2002 holds the BBS/bar status messages (0-based items): 350+name+351
 // is the all-16-slots-busy notice, 352 the empty board (FUN_0043c470 shows
 // these instead of the list).
@@ -316,6 +322,8 @@ export class MissionBBS extends Menu<void> {
     private acceptButton?: Button;
     private refuseButton?: Button;
     private selected?: MissionOffer;
+    // Per-offer selection border, repainted bright/dim on every select().
+    private entryBorders = new Map<MissionOffer, PIXI.Graphics>();
     private currentOffers: MissionOffer[] = [];
     private currentIndex = -1;
     // Resolves a decision: null = Done/leave, { offer, accepted } = that
@@ -395,6 +403,12 @@ export class MissionBBS extends Menu<void> {
         };
         window.addEventListener('keydown', this.previewKeyHandler);
         this.container.addChild(this.previewText);
+        // The mask must be in the display tree to share previewText's
+        // transform space (an orphaned mask clips in the wrong coordinates);
+        // renderable=false keeps the fill itself unpainted — PIXI still
+        // renders it into the stencil for the clip.
+        this.container.addChild(this.previewMask);
+        this.previewMask.renderable = false;
 
         this.briefing = new BriefingDialog(gameData, controlEvents);
         this.container.addChild(this.briefing.container);
@@ -492,6 +506,7 @@ export class MissionBBS extends Menu<void> {
     // buttons. The buttons reuse the briefing's per-mission labels.
     protected async select(offer: MissionOffer): Promise<void> {
         this.selected = offer;
+        this.repaintSelection();
         this.scrollPreview(0, true);   // reset the scroll for a new mission
         this.previewText.text = offer.briefText;
         this.previewPict.children.length = 0;
@@ -598,6 +613,18 @@ export class MissionBBS extends Menu<void> {
         return remaining.filter(offer => isAvailable(offer.mission, ctx));
     }
 
+    // Repaints every entry's border: bright on the selected offer, dim on
+    // the rest (the outfitter ItemTile's active style).
+    private repaintSelection(): void {
+        for (const [offer, border] of this.entryBorders) {
+            border.clear();
+            border.lineStyle(ENTRY_BORDER.lineWidth,
+                offer === this.selected ? ENTRY_BORDER.bright
+                    : ENTRY_BORDER.dim);
+            border.drawRect(0, 0, ENTRY_BORDER.width, ENTRY_BORDER.height);
+        }
+    }
+
     protected drawList(offers: MissionOffer[]) {
         this.listContainer.removeChildren();
         this.drawEntries(offers, BBS_LIST_POS.y);
@@ -607,6 +634,7 @@ export class MissionBBS extends Menu<void> {
     // can decorate the box (the bar's welcome text) and reuse the layout.
     // Clicking an entry selects it, repainting the in-panel preview.
     protected drawEntries(offers: MissionOffer[], startY: number) {
+        this.entryBorders.clear();
         let y = startY;
         for (const offer of offers) {
             // A PIXI.Text is not hit-tested reliably, so wrap each entry in a
@@ -617,12 +645,17 @@ export class MissionBBS extends Menu<void> {
             entry.position.x = BBS_LIST_POS.x;
             entry.position.y = y;
             entry.interactive = true;
-            entry.hitArea = new PIXI.Rectangle(0, 0, 300, 22);
+            entry.hitArea = new PIXI.Rectangle(0, 0, ENTRY_BORDER.width,
+                ENTRY_BORDER.height);
+            const border = new PIXI.Graphics();
+            entry.addChild(border);
             entry.addChild(text);
+            this.entryBorders.set(offer, border);
             entry.on('pointerdown', () => { this.select(offer).catch(
                 (e) => console.warn('[bbs] select failed', e)); });
             this.listContainer.addChild(entry);
             y += text.height + 8;
         }
+        this.repaintSelection();
     }
 }
