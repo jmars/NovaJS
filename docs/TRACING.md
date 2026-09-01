@@ -87,8 +87,16 @@ Combat damage is done first (highest value × tractability):
    directions) and sweep the port's real `deactivateRanksOnShipLoss` over all
    rank/govt/alliance configurations (320 cases). Deterministic set comparison.
 
-4. **NPC AI decisions** — aggress / target / retaliate / flee. Most faithful but
-   also most stateful and complex; deferred.
+4. **NPC AI** (partially done) — `npc_ai_model.ts` + `npc_ai_trace_test.ts`
+   reference-model the trader/interceptor **destination pick** (`FUN_0040c790`):
+   the rejection draw of rand(16) over the system's spöb slots, predicate
+   selected by the trader government's flags2 + the planet category counts.
+   The trace drives the port's real `drawDestination` beside the model across
+   6 planet catalogs × 5 governments × 2 modes × 8 seeds (480 cases),
+   fingerprinting both the LCG rejection-draw stream and the chosen
+   destination. The rest of the AI (acquisition scan `FUN_0040e020`,
+   retaliation `FUN_004192d0`, pursuit memory, flee) is stateful and not yet
+   reference-traced.
 
 ## How to add a traced subsystem
 
@@ -107,4 +115,5 @@ Combat damage is done first (highest value × tractability):
 
 - Phase A: done
 - Phase B: done
-- Phase C: combat damage, flight physics, combat rating done; NPC AI not started
+- Phase C: combat damage, flight physics, combat rating done; NPC AI destination
+  pick done (acquisition/retaliation/pursuit/flee remain stateful, untraced)

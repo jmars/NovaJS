@@ -228,7 +228,9 @@ const TRAVEL_PARAM_2 = false;
 type PlanetEntry = readonly [string, MovementState, { id: string },
     PlanetData | undefined];
 
-function drawDestination(govtId: string | null | undefined, world: World,
+// FUN_0040c790's trader/interceptor destination pick (exported for the
+// flight/AI trace harness, which drives it beside the pure reference model).
+export function drawDestination(govtId: string | null | undefined, world: World,
     planets: Array<PlanetEntry>, interceptorMode: boolean): string | null {
     const env = world.resources.get(MissionEnvResource);
     const mine = env?.government(govtId ?? null) ?? null;
