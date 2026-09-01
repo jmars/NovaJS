@@ -20,7 +20,7 @@ import { WeaponsStateComponent } from '../nova_plugin/weapons_state';
 import { Button } from './button';
 import { Bar } from './bar';
 import { BriefingDialog, GameMissionTextEnv } from './briefing';
-import { CARGO_NAME_STR } from './mission_text';
+import { CARGO_NAME_STR, expandDescription } from './mission_text';
 import { briefingInput, acceptOffer, computeOffers, logEffects, MissionBBS, MissionUiEnv, refuseOffer } from './mission_bbs';
 import { MissionInfo, renderMissionInfo } from './mission_info';
 import { Menu } from './menu';
@@ -107,6 +107,7 @@ export class Spaceport extends Menu<Entity> {
                 },
                 priceMod: this.getPriceMod(),
                 freeMass: await this.currentFreeMass(outfits),
+                descriptionCtx: await this.descriptionContext(),
             });
             this.outfitter.setMarketContext(await this.marketContext(outfits));
         }
@@ -135,6 +136,7 @@ export class Spaceport extends Menu<Entity> {
                     queuePlayerStateSave();
                 },
                 priceMod: this.getPriceMod(),
+                descriptionCtx: await this.descriptionContext(),
             });
             this.shipyard.setMarketContext(await this.marketContext(
                 this.input.components.get(OutfitsStateComponent) ?? new Map()));
@@ -495,6 +497,31 @@ export class Spaceport extends Menu<Entity> {
     // govt-mask pool (FUN_0046cca0: flagship | earned ranks | owned
     // outfits), the control-bit context for AvailBits expressions, and the
     // per-day stock rolls. `outfits` is what the player carries.
+    private async descriptionContext():
+        Promise<Parameters<typeof expandDescription>[1]> {
+        if (!this.missions || !this.textEnv) {
+            throw new Error('Spaceport has no mission state');
+        }
+        const shipId = this.input.components.get(ShipComponent)?.id;
+        let shipName = "";
+        let shipTypeName = "";
+        if (shipId) {
+            try {
+                const ship = await this.gameData.data.Ship.get(shipId);
+                // Ships aren't player-named yet; both tags show the type.
+                shipName = ship.name;
+                shipTypeName = ship.name;
+            }
+            catch { }
+        }
+        return {
+            state: this.missions.playerState,
+            env: this.textEnv,
+            shipName,
+            shipTypeName,
+        };
+    }
+
     private async marketContext(outfits: purchase.Outfits): Promise<MarketContext> {
         if (!this.missions || !this.data) {
             throw new Error('Spaceport has no mission state');

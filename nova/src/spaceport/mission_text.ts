@@ -80,6 +80,34 @@ export interface MissionTextContext {
     warn?(message: string): void;
 }
 
+// Expands an item/ship description (a dësc string) which may carry the
+// engine's mutable blocks ({bXXX / {P / {G}) and name tags (<PNN>, <PST>,
+// <PSN>). Descriptions have no mission, so the context is built from the
+// real player state, text env and ship names — never dummy values, since
+// stock dësc use <PNN>/<PST> and the `{b424`/`{P` registration gates.
+export function expandDescription(text: string, ctx: {
+    state: PlayerState;
+    env: MissionTextEnv;
+    shipName: string;
+    shipTypeName: string;
+}): string {
+    return expandMissionText(text, {
+        state: ctx.state,
+        mission: {} as MissionData,
+        active: {
+            missionId: "", originStellar: "", travelStellar: null,
+            returnStellar: null, travelComplete: false, shipGoalComplete: false,
+            failed: false, cargoLoaded: false, cargo: null, deadline: null,
+            specialShips: null, auxShips: null,
+        },
+        env: ctx.env,
+        shipName: ctx.shipName,
+        shipTypeName: ctx.shipTypeName,
+        offeringShipName: ctx.shipName,
+        specialShipName: "",
+    });
+}
+
 export function expandMissionText(text: string, ctx: MissionTextContext): string {
     let out = "";
     let i = 0;

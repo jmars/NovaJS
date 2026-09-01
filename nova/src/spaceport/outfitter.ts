@@ -9,6 +9,7 @@ import { Button } from "./button";
 import { ItemGrid, ItemTile } from "./item_grid";
 import { MarketContext, orderOutfits, outfitListed } from "./market_filter";
 import { Menu } from "./menu";
+import { expandDescription } from "./mission_text";
 import * as purchase from "./purchase";
 
 
@@ -25,6 +26,9 @@ export interface OutfitterPurchases {
     setCredits(credits: number): void;
     priceMod: number;
     freeMass: number;
+    // Real context for expanding the outfit description's dësc blocks
+    // ({bXXX/{P registration gates, <PNN>/<PST> name tags).
+    descriptionCtx: Parameters<typeof expandDescription>[1];
 }
 
 export const FONT = {
@@ -286,8 +290,11 @@ export class Outfitter extends Menu<OutfitsState> {
             this.pictContainer.addChild(outfitTile.largePict);
         }
 
-        // Set Description
-        this.text.description.text = outfitTile.item.desc;
+        // Set Description — expand the dësc blocks ({bXXX/{P registration
+        // gates, <PNN>/<PST> name tags) against the real player context.
+        this.text.description.text = this.purchases
+            ? expandDescription(outfitTile.item.desc, this.purchases.descriptionCtx)
+            : outfitTile.item.desc;
 
         // Set price text: what buying one costs here (price-modified when
         // the purchases context is live).

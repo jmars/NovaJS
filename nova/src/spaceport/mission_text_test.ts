@@ -8,7 +8,7 @@ import { getDefaultMissionData, MissionData } from "novadatainterface/MissionDat
 import { getDefaultRankData, RankData } from "novadatainterface/RankData";
 import { getDefaultStringSetData, StringSetData } from "novadatainterface/StringSetData";
 import { ActiveMission, PlayerState } from "../player/player_state";
-import { expandMissionText, MissionTextContext, MissionTextEnv,
+import { expandDescription, expandMissionText, MissionTextContext, MissionTextEnv,
     pickSpecialShipName, CARGO_NAME_STR } from "./mission_text";
 
 
@@ -394,4 +394,19 @@ describe("stock dësc corpus", function() {
         expect(result).not.toContain("{G");
         expect(result).toContain("resourceful man");
     });
+
+    it("expandDescription hides the {b424 unregistered blurb for a fresh pilot",
+        function() {
+            const state = makeTestState();
+            state.bits[424] = 0;
+            // A stock dësc with the unregistered trial text gated behind
+            // {b424 "..."} (e.g. the Medium Blaster's description).
+            const out = expandDescription(
+                "Normal text.\\r\\rRequires: Heavy Weapons License"
+                    + '{b424 "\\rYou stare at this item, and the others around it, '
+                    + "for several long, sad moments\"}",
+                { state, env: TEST_ENV, shipName: "Shuttle", shipTypeName: "Shuttle" });
+            expect(out).toContain("Requires: Heavy Weapons License");
+            expect(out).not.toContain("stare at this item");
+        });
 });

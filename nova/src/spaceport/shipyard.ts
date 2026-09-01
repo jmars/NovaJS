@@ -14,6 +14,7 @@ import { TextDialog } from './briefing';
 import { ItemGrid, ItemTile } from './item_grid';
 import { MarketContext, orderShips, shipListed } from './market_filter';
 import { Menu } from './menu';
+import { expandDescription } from './mission_text';
 import { FONT, formatPrice } from './outfitter';
 import * as purchase from './purchase';
 
@@ -33,6 +34,9 @@ export interface ShipyardPurchases {
     credits(): number;
     setCredits(credits: number): void;
     priceMod: number;
+    // Real context for expanding the ship description's dësc blocks
+    // ({bXXX/{P registration gates, <PNN>/<PST> name tags).
+    descriptionCtx: Parameters<typeof expandDescription>[1];
 }
 
 export class Shipyard extends Menu<Entity> {
@@ -196,8 +200,11 @@ export class Shipyard extends Menu<Entity> {
             this.pictContainer.addChild(shipTile.largePict);
         }
 
-        // Set Description
-        this.text.description.text = shipTile.item.desc;
+        // Set Description — expand the dësc blocks ({bXXX/{P registration
+        // gates, <PNN>/<PST> name tags) against the real player context.
+        this.text.description.text = this.purchases
+            ? expandDescription(shipTile.item.desc, this.purchases.descriptionCtx)
+            : shipTile.item.desc;
 
         // Price (price-modified when the purchases context is live) and the
         // current credits, once a ship is selected.
