@@ -344,10 +344,11 @@ export class MissionBBS extends Menu<void> {
             { x: BBS_LIST_POS.x, y: 135 });
         this.doneButton.click.subscribe(() => this.decided.next(null));
         this.addButtons({ done: this.doneButton });
+        // Arrow-key navigation is handled by the direct window keydown
+        // listener below; keep the ECS map to depart only so a single press
+        // doesn't navigate twice.
         this.controls.controls = {
             depart: () => this.decided.next(null),
-            up: () => this.navigate(-1),
-            down: () => this.navigate(1),
         };
 
         this.container.addChild(this.listContainer);
