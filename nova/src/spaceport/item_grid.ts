@@ -157,6 +157,33 @@ interface Item {
 
 const BOX_COUNT = [4, 5];
 
+// Clips a PIXI.Text to a box and makes it mouse-wheel scrollable (the BBS
+// preview, and the outfitter/shipyard item descriptions). `scroll` repositions
+// the text by `delta` pixels (positive = down), clamped to the box height;
+// pass `reset` to jump back to the top. Returns the scroll handle.
+export function makeTextScrollable(text: PIXI.Text, x: number, y: number,
+    width: number, height: number): { scroll: (delta: number, reset?: boolean) => void } {
+    text.position.x = x;
+    text.position.y = y;
+    text.style.wordWrap = true;
+    text.style.wordWrapWidth = width;
+    text.interactive = true;
+    text.hitArea = new PIXI.Rectangle(0, 0, width, height);
+    const mask = new PIXI.Graphics();
+    mask.beginFill(0xffffff);
+    mask.drawRect(x, y, width, height);
+    mask.endFill();
+    text.mask = mask;
+    let scroll = 0;
+    const maxScroll = () => Math.max(0, text.height - height);
+    const doScroll = (delta: number, reset = false): void => {
+        scroll = reset ? 0 : Math.max(0, Math.min(maxScroll(), scroll + delta));
+        text.position.y = y - scroll;
+    };
+    text.on('wheel', (e: PIXI.FederatedWheelEvent) => doScroll(e.deltaY));
+    return { scroll: doScroll };
+}
+
 export class ItemGrid<I extends Item> {
     public activeTile = new BehaviorSubject<ItemTile<I> | undefined>(undefined);
     public container = new PIXI.Container();
@@ -173,6 +200,35 @@ export class ItemGrid<I extends Item> {
             this.tilesDict.set(item.id, tile);
             return tile;
         });
+        // Mouse-wheel scrolls the visible window down/up by one row.
+        this.container.interactive = true;
+        this.container.on('wheel', (e: PIXI.FederatedWheelEvent) => {
+            this.wheelScroll(e.deltaY > 0 ? 1 : -1);
+        });
+    }
+
+    // Moves the selection down/up by one row per wheel step, keeping it in
+    // view (the binary scrolls the outfitter/shipyard grid with the wheel).
+    wheelScroll(dir: number) {
+        if (this.items.length === 0) {
+            return;
+        }
+        const step = dir > 0 ? BOX_COUNT[0] : -BOX_COUNT[0];
+        const idx = this.selectionIndex === -1
+            ? 0 : Math.max(0, Math.min(this.items.length - 1,
+                this.selectionIndex + step));
+        this.selectionIndex = idx;
+        if (this.scroll * BOX_COUNT[0] > this.selectionIndex) {
+            this.scroll = Math.max(0,
+                Math.floor(this.selectionIndex / BOX_COUNT[0]));
+        }
+        else if (this.scroll * BOX_COUNT[0] + BOX_COUNT[0] * BOX_COUNT[1]
+            <= this.selectionIndex) {
+            this.scroll = Math.max(0, Math.floor(
+                (this.selectionIndex - BOX_COUNT[0] * BOX_COUNT[1]
+                    + BOX_COUNT[0] - 1) / BOX_COUNT[0]));
+        }
+        this.drawGrid();
     }
 
     get count() {

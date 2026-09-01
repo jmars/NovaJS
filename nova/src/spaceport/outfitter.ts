@@ -6,7 +6,7 @@ import { GameData } from "../client/gamedata/GameData";
 import { ControlEvent } from "../nova_plugin/controls_plugin";
 import { OutfitsState } from "../nova_plugin/outfit_plugin";
 import { Button } from "./button";
-import { ItemGrid, ItemTile } from "./item_grid";
+import { ItemGrid, ItemTile, makeTextScrollable } from "./item_grid";
 import { MarketContext, orderOutfits, outfitListed } from "./market_filter";
 import { Menu } from "./menu";
 import { expandDescription } from "./mission_text";
@@ -50,6 +50,7 @@ export class Outfitter extends Menu<OutfitsState> {
     private itemGrid?: ItemGrid<OutfitData>;
     private gridSubscription?: Subscription;
     private pictContainer = new PIXI.Container();
+    private descScroll?: (delta: number, reset?: boolean) => void;
     private outfits: DefaultMap<string, number>;
     private purchases?: OutfitterPurchases;
     private freeMass = 0;
@@ -99,6 +100,8 @@ export class Outfitter extends Menu<OutfitsState> {
 
         this.text.description.position.x = -27;
         this.text.description.position.y = -150;
+        this.descScroll = makeTextScrollable(this.text.description, -27, -150,
+            descWidth, 260).scroll;
 
         this.text.itemPrice.position.x = 234;
         this.text.itemPrice.position.y = 58;
@@ -292,6 +295,7 @@ export class Outfitter extends Menu<OutfitsState> {
 
         // Set Description — expand the dësc blocks ({bXXX/{P registration
         // gates, <PNN>/<PST> name tags) against the real player context.
+        this.descScroll?.(0, true);
         this.text.description.text = this.purchases
             ? expandDescription(outfitTile.item.desc, this.purchases.descriptionCtx)
             : outfitTile.item.desc;

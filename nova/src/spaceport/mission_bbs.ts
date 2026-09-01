@@ -310,6 +310,9 @@ export class MissionBBS extends Menu<void> {
     // Accept/Refuse buttons in the bottom-right box.
     private previewPict = new PIXI.Container();
     private previewText = new PIXI.Text("", FONT.entry);
+    private previewMask = new PIXI.Graphics();
+    private previewScroll = 0;
+    private previewKeyHandler?: (e: KeyboardEvent) => void;
     private acceptButton?: Button;
     private refuseButton?: Button;
     private selected?: MissionOffer;
@@ -344,10 +347,39 @@ export class MissionBBS extends Menu<void> {
         this.previewPict.position.y = BBS_PICT_POS.y;
         this.container.addChild(this.previewPict);
         // The selected mission's brief text fills the panel's middle box
-        // (between the list and the pict).
-        this.previewText.position.x = BBS_LIST_POS.x + 320;
-        this.previewText.position.y = BBS_LIST_POS.y;
+        // (between the list and the pict), clipped to it and scrollable with
+        // the mouse wheel / arrow keys (the binary's mission computer
+        // scrolls long briefs).
+        const previewX = BBS_LIST_POS.x + 320;
+        const previewY = BBS_LIST_POS.y;
+        this.previewText.position.x = previewX;
+        this.previewText.position.y = previewY;
         this.previewText.style.wordWrapWidth = 210;
+        this.previewText.interactive = true;
+        this.previewText.hitArea = new PIXI.Rectangle(0, 0, 210, 260);
+        this.previewMask.beginFill(0xffffff);
+        this.previewMask.drawRect(previewX, previewY, 210, 260);
+        this.previewMask.endFill();
+        this.previewText.mask = this.previewMask;
+        // Mouse-wheel scroll over the brief text.
+        this.previewText.on('wheel', (e: PIXI.FederatedWheelEvent) => {
+            this.scrollPreview(e.deltaY);
+        });
+        // Arrow-key scroll, active only while the BBS is shown.
+        this.previewKeyHandler = (e: KeyboardEvent) => {
+            if (!this.container.visible || !this.previewText.text) {
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                this.scrollPreview(-20);
+                e.preventDefault();
+            }
+            else if (e.key === 'ArrowDown') {
+                this.scrollPreview(20);
+                e.preventDefault();
+            }
+        };
+        window.addEventListener('keydown', this.previewKeyHandler);
         this.container.addChild(this.previewText);
 
         this.briefing = new BriefingDialog(gameData, controlEvents);
@@ -427,6 +459,7 @@ export class MissionBBS extends Menu<void> {
     // buttons. The buttons reuse the briefing's per-mission labels.
     protected async select(offer: MissionOffer): Promise<void> {
         this.selected = offer;
+        this.scrollPreview(0, true);   // reset the scroll for a new mission
         this.previewText.text = offer.briefText;
         this.previewPict.children.length = 0;
         // Desc graphic ids below 128 mean "no graphic" (stock convention).
@@ -440,6 +473,16 @@ export class MissionBBS extends Menu<void> {
             }
         }
         await this.setAcceptRefuse(offer);
+    }
+
+    // Scrolls the clipped preview brief by `delta` pixels (positive = down,
+    // reveal lower text), clamped so the box never shows past the text ends.
+    // `reset` repositions from the top.
+    private scrollPreview(delta: number, reset = false): void {
+        const max = Math.max(0, this.previewText.height - 260);
+        this.previewScroll = reset ? 0
+            : Math.max(0, Math.min(max, this.previewScroll + delta));
+        this.previewText.position.y = BBS_LIST_POS.y - this.previewScroll;
     }
 
     // The Accept/Refuse buttons for `offer`, rebuilt per mission (labels can

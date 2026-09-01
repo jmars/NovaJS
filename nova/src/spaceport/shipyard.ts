@@ -11,7 +11,7 @@ import { PlayerShipSelector } from '../nova_plugin/player_ship_plugin';
 import { ShipComponent } from '../nova_plugin/ship_plugin';
 import { Button } from './button';
 import { TextDialog } from './briefing';
-import { ItemGrid, ItemTile } from './item_grid';
+import { ItemGrid, ItemTile, makeTextScrollable } from './item_grid';
 import { MarketContext, orderShips, shipListed } from './market_filter';
 import { Menu } from './menu';
 import { expandDescription } from './mission_text';
@@ -41,6 +41,7 @@ export interface ShipyardPurchases {
 
 export class Shipyard extends Menu<Entity> {
     private pictContainer = new PIXI.Container();
+    private descScroll?: (delta: number, reset?: boolean) => void;
     itemGrid?: ItemGrid<ShipData>;
     private gridSubscription?: Subscription;
     private purchases?: ShipyardPurchases;
@@ -77,6 +78,8 @@ export class Shipyard extends Menu<Entity> {
 
         this.text.description.position.x = -27;
         this.text.description.position.y = -150;
+        this.descScroll = makeTextScrollable(this.text.description, -27, -150,
+            190, 260).scroll;
 
         this.text.priceLabel.position.x = 234;
         this.text.priceLabel.position.y = 58;
@@ -202,6 +205,7 @@ export class Shipyard extends Menu<Entity> {
 
         // Set Description — expand the dësc blocks ({bXXX/{P registration
         // gates, <PNN>/<PST> name tags) against the real player context.
+        this.descScroll?.(0, true);
         this.text.description.text = this.purchases
             ? expandDescription(shipTile.item.desc, this.purchases.descriptionCtx)
             : shipTile.item.desc;
