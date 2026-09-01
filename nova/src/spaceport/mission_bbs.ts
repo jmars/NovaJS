@@ -373,17 +373,22 @@ export class MissionBBS extends Menu<void> {
         this.previewText.on('wheel', (e: PIXI.FederatedWheelEvent) => {
             this.scrollPreview(e.deltaY);
         });
-        // Arrow-key scroll, active only while the BBS is shown.
+        // Arrow keys navigate the mission list (select a different mission),
+        // active only while the BBS is shown. A direct window listener is
+        // used because the ECS control-state path isn't reliably delivering
+        // to the BBS in all browsers.
         this.previewKeyHandler = (e: KeyboardEvent) => {
-            if (!this.container.visible || !this.previewText.text) {
+            if (!this.container.visible) {
                 return;
             }
             if (e.key === 'ArrowUp') {
-                this.scrollPreview(-20);
+                this.navigate(-1).catch(
+                    (err) => console.warn('[bbs] nav failed', err));
                 e.preventDefault();
             }
             else if (e.key === 'ArrowDown') {
-                this.scrollPreview(20);
+                this.navigate(1).catch(
+                    (err) => console.warn('[bbs] nav failed', err));
                 e.preventDefault();
             }
         };
@@ -603,17 +608,20 @@ export class MissionBBS extends Menu<void> {
     protected drawEntries(offers: MissionOffer[], startY: number) {
         let y = startY;
         for (const offer of offers) {
-            const entry = new PIXI.Text(offer.listText, FONT.entry);
+            // A PIXI.Text is not hit-tested reliably, so wrap each entry in a
+            // Container (the outfitter ItemTile pattern, which clicks fine)
+            // with an explicit hit box and pointerdown.
+            const text = new PIXI.Text(offer.listText, FONT.entry);
+            const entry = new PIXI.Container();
             entry.position.x = BBS_LIST_POS.x;
             entry.position.y = y;
-            // Explicit hit box + pointerdown (like the Button class) so the
-            // mission entry is reliably clickable.
             entry.interactive = true;
             entry.hitArea = new PIXI.Rectangle(0, 0, 300, 22);
+            entry.addChild(text);
             entry.on('pointerdown', () => { this.select(offer).catch(
                 (e) => console.warn('[bbs] select failed', e)); });
             this.listContainer.addChild(entry);
-            y += entry.height + 8;
+            y += text.height + 8;
         }
     }
 }
