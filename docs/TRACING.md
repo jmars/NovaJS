@@ -80,7 +80,12 @@ Combat damage is done first (highest value × tractability):
    turn-to and reverse trajectories. The trace is run with `TimeSystem` absent
    so the tick is deterministic (that system uses wall-clock).
 
-3. **Combat rating / ranks** — `combat_rating_plugin`: deterministic thresholds.
+3. **Combat rating / ranks** (done) — `combat_rating_model.ts` +
+   `combat_rating_trace_test.ts` reference-model the ränk 0x0004 ship-loss
+   stripping (which active ranks a destroyed/disabled ship of a given govt
+   deactivates: flag-0x0004, non-permanent 0x0008, own-govt or allied both
+   directions) and sweep the port's real `deactivateRanksOnShipLoss` over all
+   rank/govt/alliance configurations (320 cases). Deterministic set comparison.
 
 4. **NPC AI decisions** — aggress / target / retaliate / flee. Most faithful but
    also most stateful and complex; deferred.
@@ -102,4 +107,4 @@ Combat damage is done first (highest value × tractability):
 
 - Phase A: done
 - Phase B: done
-- Phase C: combat damage done, flight physics done; combat rating → NPC AI not started
+- Phase C: combat damage, flight physics, combat rating done; NPC AI not started
