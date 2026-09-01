@@ -44,13 +44,15 @@ import { makePlayerState, makeTestEnv, SYSTEMS } from "../missions/test_fixtures
 import { PlayerStateResource } from "../player/player_state_component";
 import {
     ambientEventTrace,
+    ambientPeripherals,
     ambientRoll,
     AmbientTrace,
     BranchShape,
-    RollTrace,
+    TraceEntry,
 } from "./ambient_model";
 import { AmbientPlugin } from "./ambient_plugin";
 import { GameDataResource } from "./game_data_resource";
+import { GovernmentComponent } from "./npc_plugin";
 import { SystemIdResource } from "./system_id_resource";
 
 export const ROLLS = 4; // Kania sÿst 128's roll count
@@ -59,12 +61,26 @@ export const ROLLS = 4; // Kania sÿst 128's roll count
 export const EVENTS = 4;
 const FLEET_ELIGIBLE = 10;
 const PERS_ELIGIBLE = 100;
+// The sÿst peripheral përs ids (the eligible përs table uses nova:960+;
+// the peripheral loop uses these distinct ids so the keys never collide).
+const PERIPH_IDS = ["nova:970", "nova:971"];
 
 export const SHAPE: BranchShape = {
     fleetEligible: FLEET_ELIGIBLE,
     persEligible: PERS_ELIGIBLE,
     dudePairWeight: 100,
     dudeShipWeight: 100,
+    // Every fixture flët carries one escort group of 0..1 ships: a flët
+    // draw spawns the lead plus a rolled number of escorts (FUN_004259b0).
+    fleetEscorts: [{ min: 0, max: 1 }],
+    // Two peripheral përs: one always warps in (percent 100), one only on
+    // a 30% roll — exercising both sides of the rand(100)+1 <= percent gate.
+    peripherals: [
+        { id: PERIPH_IDS[0], percent: 100 },
+        { id: PERIPH_IDS[1], percent: 30 },
+    ],
+    dudeGovts: [],
+    persIds: [],
 };
 
 const SHIP_ID = "nova:600";
@@ -107,6 +123,8 @@ export interface PortRun {
     probes: number[];
     // Ambient entity keys after each frame (index frame-1).
     keysByFrame: string[][];
+    // The spawned dûde ship → government, accumulated across frames.
+    govtByKey: Record<string, string>;
 }
 
 // Runs the port's PopulateSystem for one seed over `events` population
@@ -122,15 +140,32 @@ export async function runPort(seed: number, events: number,
         id: SHIP_ID,
         name: "Trace Ship",
     });
+    // The dûde table: either the real (govt, weight) pairs from
+    // shape.dudeGovts (Phase B), or the single default dûde.
     if (shape.dudePairWeight > 0) {
-        gameData.data.Dude.map.set(DUDE_ID, {
-            ...getDefaultDudeData(),
-            id: DUDE_ID,
-            name: "Trace Dûde",
-            // One ship class of weight 100: a dûde pick always spawns
-            // SHIP_ID.
-            shipTypes: [{ ship: SHIP_ID, probability: shape.dudeShipWeight }],
-        });
+        if (shape.dudeGovts.length === 0) {
+            gameData.data.Dude.map.set(DUDE_ID, {
+                ...getDefaultDudeData(),
+                id: DUDE_ID,
+                name: "Trace Dûde",
+                // One ship class of weight 100: a dûde pick always spawns
+                // SHIP_ID.
+                shipTypes: [{ ship: SHIP_ID, probability: shape.dudeShipWeight }],
+            });
+        }
+        else {
+            for (let i = 0; i < shape.dudeGovts.length; i++) {
+                const id = `nova:${910 + i}`;
+                gameData.data.Dude.map.set(id, {
+                    ...getDefaultDudeData(),
+                    id,
+                    name: `Dûde ${i} (${shape.dudeGovts[i].govt})`,
+                    govt: shape.dudeGovts[i].govt,
+                    shipTypes: [{ ship: SHIP_ID,
+                        probability: shape.dudeShipWeight }],
+                });
+            }
+        }
     }
     for (let i = 0; i < shape.fleetEligible; i++) {
         const id = `nova:${950 + i}`;
@@ -139,10 +174,16 @@ export async function runPort(seed: number, events: number,
             id,
             name: `Trace Fleet ${i}`,
             leadShipType: SHIP_ID,
+            // shape.fleetEscorts: every fixture flët carries the same escort
+            // groups, so the model can replay one config for all fleets.
+            escorts: shape.fleetEscorts.map(esc => ({
+                ship: SHIP_ID, min: esc.min, max: esc.max,
+            })),
         });
     }
     for (let i = 0; i < shape.persEligible; i++) {
-        const id = `nova:${960 + i}`;
+        const id = shape.persIds.length > 0
+            ? shape.persIds[i] : `nova:${960 + i}`;
         gameData.data.Pers.map.set(id, {
             ...getDefaultPersData(),
             id,
@@ -152,8 +193,29 @@ export async function runPort(seed: number, events: number,
             shipType: SHIP_ID,
         });
     }
+    // The sÿst peripheral përs (alive + active so spawnPeripherals draws
+    // for every one; shipType set so a warp always lands the fixture ship).
+    for (const p of shape.peripherals) {
+        gameData.data.Pers.map.set(p.id, {
+            ...getDefaultPersData(),
+            id: p.id,
+            name: `Peripheral Përs ${p.id}`,
+            linkSyst: -1,
+            govt: null,
+            shipType: SHIP_ID,
+        });
+    }
 
     const { env } = makeTestEnv();
+    const traceSystem = SYSTEMS.get(TRACE_SYSTEM)!;
+    // The fixture system's peripheral pairs and dûde table come from the
+    // shape, so the port draws exactly the model's peripherals + dudes.
+    traceSystem.persPeripherals = shape.peripherals.map(
+        p => ({ pers: p.id, percent: p.percent }));
+    traceSystem.dudePairs = shape.dudeGovts.length > 0
+        ? shape.dudeGovts.map((g, i) => ({ dude: `nova:${910 + i}`,
+            count: g.weight }))
+        : [{ dude: DUDE_ID, count: shape.dudePairWeight }];
     const world = new World();
     world.resources.set(GameDataResource, gameData);
     world.resources.set(SystemIdResource,
@@ -167,9 +229,24 @@ export async function runPort(seed: number, events: number,
     const player = new Entity("player");
     world.entities.set("player", player);
 
-    const ambientKeys = () => [...world.entities.keys()].filter(key =>
-        key.startsWith("fleet-ship ") || key.startsWith("pers-ship ")
-        || key.startsWith("dude-ship "));
+    const govtByKey: Record<string, string> = {};
+    const ambientKeys = () => {
+        const keys: string[] = [];
+        for (const [key, entity] of world.entities) {
+            if (key.startsWith("fleet-ship ") || key.startsWith("pers-ship ")
+                || key.startsWith("dude-ship ")) {
+                keys.push(key);
+                if (key.startsWith("dude-ship ")
+                    && !(key in govtByKey)) {
+                    const govt = entity.components.get(GovernmentComponent)?.id;
+                    if (govt) {
+                        govtByKey[key] = govt;
+                    }
+                }
+            }
+        }
+        return keys;
+    };
 
     // Bursts at odd frames 1..2*events-1, the last burst's spawns land one
     // frame later.
@@ -201,10 +278,10 @@ export async function runPort(seed: number, events: number,
                 ["player"]);
         }
     }
-    return { seed, events, probed, probes, keysByFrame };
+    return { seed, events, probed, probes, keysByFrame, govtByKey };
 }
 
-function describeDraws(draws: RollTrace["draws"]): string {
+function describeDraws(draws: TraceEntry["draws"]): string {
     if (draws.length === 0) {
         return "(no draws — empty branch)";
     }
@@ -237,7 +314,7 @@ export async function compareAmbientTrace(seed: number, events: number,
 
     // Re-run the model's decision logic on the same stream the port draws
     // from, with the same per-frame probe cadence.
-    const decisions: RollTrace[] = [];
+    const decisions: TraceEntry[] = [];
     const replayProbes: number[] = [];
     const wantKeysByFrame: string[][] = [];
     let keys = new Set<string>();
@@ -254,14 +331,22 @@ export async function compareAmbientTrace(seed: number, events: number,
             || (frame % 2 === 0 && frame < 2 * events);
         if (isBurstFrame && bursts < events) {
             bursts++;
+            // The sÿst Peripherals loop runs before the roll loop
+            // (FUN_0041af90's head), so replay it first.
+            for (const peripheral of ambientPeripherals(shape, bursts)) {
+                decisions.push(peripheral);
+                for (const key of peripheral.keys) {
+                    pendingKeys.push(key);
+                }
+            }
             for (let roll = 1; roll <= ROLLS; roll++) {
                 const decision = ambientRoll(shape, bursts, roll, dudeCounter);
                 decisions.push(decision);
                 if (decision.branch === "dude" && decision.spawned) {
                     dudeCounter++;
                 }
-                if (decision.key !== null) {
-                    pendingKeys.push(decision.key);
+                for (const key of decision.keys) {
+                    pendingKeys.push(key);
                 }
             }
         }
@@ -314,6 +399,26 @@ export async function compareAmbientTrace(seed: number, events: number,
         if (want.join("|") !== got.join("|")) {
             return fail(frame, `spawned keys diverged — expected `
                 + `[${want.join(", ")}], port has [${got.join(", ")}]`);
+        }
+    }
+
+    // The dûde table's government distribution (Phase B): every dûde ship
+    // the replay predicts (on the same probe-advanced stream the port draws
+    // from) must carry the government the port assigned it.
+    if (shape.dudeGovts.length > 0) {
+        const replayGovtByKey: Record<string, string> = {};
+        for (const decision of decisions) {
+            if (decision.branch === "dude" && decision.spawned
+                && decision.govt !== null && decision.key !== null) {
+                replayGovtByKey[decision.key] = decision.govt;
+            }
+        }
+        for (const [key, govt] of Object.entries(replayGovtByKey)) {
+            if (port.govtByKey[key] !== govt) {
+                return fail(frames,
+                    `dûde ${key} government diverged — expected ${govt}, `
+                    + `port has ${port.govtByKey[key] ?? "none"}`);
+            }
         }
     }
     return {

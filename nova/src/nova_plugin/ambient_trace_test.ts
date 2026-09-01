@@ -33,6 +33,10 @@ const EMPTY_SHAPE: BranchShape = {
     persEligible: 0,
     dudePairWeight: 0,
     dudeShipWeight: 0,
+    fleetEscorts: [],
+    dudeGovts: [],
+    persIds: [],
+    peripherals: [],
 };
 
 function findSeed(shape: BranchShape,
@@ -99,28 +103,49 @@ describe("ambient trace sweep", () => {
 
 describe("ambient reference model", () => {
     it("replays the port's draw order inline", () => {
-        // The established per-roll draw sequence: gates, branch table
-        // draw + pick, or the dûde branch's four draws.
+        // The established per-event draw sequence: sÿst Peripherals first
+        // (one rand(100) per pair), then the three-way rolls — gates, branch
+        // table draw + pick, or the dûde branch's four draws.
         function inlineReplay(seed: number): string[] {
             seedRng(seed);
-            const keys: string[] = [];
+            const keys = new Set<string>();
             let dudeCounter = 0;
             for (let event = 1; event <= EVENTS; event++) {
+                // The sÿst Peripherals loop (FUN_0041af90's head). A
+                // peripheral's ship is keyed by its id and deduped: the
+                // port refuses to spawn a second copy of an already-present
+                // përs (spawnPersShip), matching the trace's key set.
+                for (const p of SHAPE.peripherals) {
+                    if (randInt(100) + 1 <= p.percent) {
+                        keys.add(`pers-ship ${p.id}`);
+                    }
+                }
                 for (let roll = 0; roll < ROLLS; roll++) {
                     if (randInt(7) === 0) {
                         // përs branch: 100 eligible përs, no draw when
                         // the table draw misses; FUN_004235c0 rolls no
                         // aggress for the përs ship.
                         if (randInt(0x3fe) < 100) {
-                            keys.push(`pers-ship nova:${960 + randInt(100)}`);
+                            keys.add(`pers-ship nova:${960 + randInt(100)}`);
                         }
                         continue;
                     }
                     if (randInt(7) === 0) {
-                        // flët branch: 10 eligible flëts.
+                        // flët branch: 10 eligible flëts, each with one
+                        // escort group of 0..1 ships (FUN_004259b0).
                         if (randInt(0x100) < 10) {
-                            keys.push(`fleet-ship nova:${950 + randInt(10)} 0`);
-                            randInt(3); // the lead ship's aggress roll
+                            const picked = randInt(10);
+                            keys.add(`fleet-ship nova:${950 + picked} 0`);
+                            // One rand(span) count draw, then that many
+                            // escorts at indices 1..
+                            const count = randInt(2);
+                            for (let i = 0; i < count; i++) {
+                                keys.add(`fleet-ship nova:${950 + picked} ${i + 1}`);
+                            }
+                            // Lead + escorts each roll aggress at build.
+                            for (let i = 0; i < 1 + count; i++) {
+                                randInt(3);
+                            }
                         }
                         continue;
                     }
@@ -131,10 +156,10 @@ describe("ambient reference model", () => {
                     randInt(3);
                     randInt(1500);
                     randInt(1500);
-                    keys.push(`dude-ship nova:900 ${dudeCounter++}`);
+                    keys.add(`dude-ship nova:900 ${dudeCounter++}`);
                 }
             }
-            return keys.sort();
+            return [...keys].sort();
         }
         for (let seed = 1; seed < 400; seed += 7) {
             const trace = ambientEventTrace(seed, SHAPE, ROLLS, EVENTS);
@@ -152,7 +177,7 @@ describe("ambient reference model", () => {
             if (roll.spawned) {
                 expect(roll.key).not.toBeNull();
                 expect(roll.draws[roll.draws.length - 1].kind).toMatch(
-                    /pick|scatter|aggress/);
+                    /pick|scatter|aggress|periph-percent/);
             }
             else {
                 expect(roll.key).toBeNull();
@@ -190,10 +215,17 @@ describe("ambient reference model", () => {
                     "dude-ship", "aggress", "scatter", "scatter");
             }
             // The pick draw only follows a table hit; dûde and flët ships
-            // roll aggress after it, përs ships do not.
-            if (roll.spawned && roll.branch !== "dude") {
+            // roll aggress after it, përs ships do not. A spawned flët
+            // draws one fleet-count per escort group, then one aggress per
+            // ship (lead + the rolled escort count).
+            if (roll.spawned && roll.branch === "pers") {
                 want.push("pick");
-                if (roll.branch === "fleet") {
+            }
+            else if (roll.spawned && roll.branch === "fleet") {
+                want.push("pick", "fleet-count");
+                const count = roll.draws
+                    .find(record => record.kind === "fleet-count")!.value;
+                for (let i = 0; i < 1 + count; i++) {
                     want.push("aggress");
                 }
             }
@@ -212,6 +244,10 @@ describe("ambient reference model", () => {
             persEligible: 0,
             dudePairWeight: 0,
             dudeShipWeight: 0,
+            fleetEscorts: [],
+    dudeGovts: [],
+    persIds: [],
+            peripherals: [],
         };
         seedRng(7);
         for (let roll = 0; roll < 200; roll++) {
