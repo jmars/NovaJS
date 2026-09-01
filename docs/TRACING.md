@@ -71,8 +71,14 @@ Combat damage is done first (highest value × tractability):
    a numeric-output comparison (shield/armor deltas), not a draw-sequence
    fingerprint.
 
-2. **Flight physics** — `movement_plugin`: global drag, per-component thrust
-   clamp, arrival brake. Deterministic — compare numeric trajectories.
+2. **Flight physics** (done) — `flight_model.ts` + `flight_trace_test.ts`
+   reference-model one movement tick (global drag `FUN_00433050`, per-component
+   thrust clamp `FUN_0043b4e0`, the +0x34 cruise cap, inertialess approach) and
+   drive the port's real `MovementSystem` over controlled time steps (no
+   `TimePlugin` — the `TimeResource` is set directly), comparing
+   position/velocity/rotation across thrust, drag, cruise-cap, inertialess,
+   turn-to and reverse trajectories. The trace is run with `TimeSystem` absent
+   so the tick is deterministic (that system uses wall-clock).
 
 3. **Combat rating / ranks** — `combat_rating_plugin`: deterministic thresholds.
 
@@ -96,4 +102,4 @@ Combat damage is done first (highest value × tractability):
 
 - Phase A: done
 - Phase B: done
-- Phase C: combat damage done; flight physics → rating → NPC AI not started
+- Phase C: combat damage done, flight physics done; combat rating → NPC AI not started
