@@ -100,8 +100,8 @@ export class Outfitter extends Menu<OutfitsState> {
 
         this.text.description.position.x = -27;
         this.text.description.position.y = -150;
-        this.descScroll = makeTextScrollable(this.text.description, -27, -150,
-            descWidth, 260).scroll;
+        this.descScroll = makeTextScrollable(this.container,
+            this.text.description, -27, -150, descWidth, 260).scroll;
 
         this.text.itemPrice.position.x = 234;
         this.text.itemPrice.position.y = 58;

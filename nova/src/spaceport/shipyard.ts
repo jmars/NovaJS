@@ -78,8 +78,8 @@ export class Shipyard extends Menu<Entity> {
 
         this.text.description.position.x = -27;
         this.text.description.position.y = -150;
-        this.descScroll = makeTextScrollable(this.text.description, -27, -150,
-            190, 260).scroll;
+        this.descScroll = makeTextScrollable(this.container,
+            this.text.description, -27, -150, 190, 260).scroll;
 
         this.text.priceLabel.position.x = 234;
         this.text.priceLabel.position.y = 58;
